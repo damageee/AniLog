@@ -1,0 +1,60 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Build and packaging output
+dist/
+build/
+*.spec
+*.apk
+*.aab
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.zip
+
+# Flet runtime / build cache
+.flet/
+
+# Local application data (user data, not source)
+storage/
+
+# test files
+testfile/
+
+# Test / type-check / coverage caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.log
+*.tmp
+*.bak
+*.orig
+*.swp
