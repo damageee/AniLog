@@ -15,7 +15,7 @@ from bangumi.ui.layout import (
     page_padding,
     vertical_page,
 )
-from bangumi.views.navigation import CAST, ENTRY, open_detail
+from bangumi.views.navigation import ENTRY
 from bangumi.views.widgets.links import DetailLink
 from bangumi.data.role_core import cast_names, cast_roles
 from bangumi.data.quarter_core import sort_records_by_broadcast
@@ -143,7 +143,7 @@ def build_cast_view(
     view = ft.View(
         route=route,
         appbar=ft.AppBar(
-            title=copyable_title(page, cast or "声优"),
+            title=copyable_title(page, f"{cast}（角色）"),
         ),
         padding=page_padding(),
         controls=[
@@ -183,12 +183,3 @@ def build_cast_view(
     return view
 
 
-def open_cast_page(
-    page: ft.Page,
-    records: list[Record],
-    record: Record,
-    *,
-    value: str | None = None,
-) -> None:
-    """打开某位声优的共用 CAST 页面。"""
-    open_detail(page, records, record, CAST, value=value)

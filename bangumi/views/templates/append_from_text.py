@@ -1,4 +1,4 @@
-"""Add page for the 已追 watchlist."""
+"""从文本批量添加字段的页面"""
 
 from __future__ import annotations
 
@@ -30,7 +30,8 @@ def build_append_from_text_view(
         multiline=True,
         min_lines=1,
         max_lines=None,
-        autofocus=True,
+        text_size=14,
+        text_align=ft.TextAlign.LEFT,
         hint_text="每行一个名称",
         hint_style=ui_text_style(color=foreground, size=13),
         text_style=ui_text_style(color=foreground, size=14),
@@ -45,7 +46,13 @@ def build_append_from_text_view(
     )
 
     def confirm(event: ft.ControlEvent) -> None:
-        on_confirm(field.value or "")
+        # 去掉行尾空白与空行，避免粘贴内容残留空格。
+        lines = [
+            line.rstrip()
+            for line in str(field.value or "").splitlines()
+        ]
+        cleaned = [line for line in lines if line.strip()]
+        on_confirm("\n".join(cleaned))
 
     return ft.View(
         route=route,

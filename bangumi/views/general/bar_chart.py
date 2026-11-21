@@ -31,6 +31,7 @@ from bangumi.ui.colors import (
 from bangumi.views.navigation import (
     go_back,
 )
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.ui.feedback import (
     no_records_note,
 )
@@ -76,13 +77,14 @@ def random_bar_colors(total: int) -> list[str]:
 
 def build_bar_chart_view(
     page: ft.Page,
-    arr: list[tuple[str, int]],
+    arr: list[tuple[str, float]],
     *,
     max_value: float | None = None,
     reverse: bool = False,
     title: str = "",
     route: str | None = None,
     decimals: int = 0,
+    hide_score: bool = False,
     on_bar_click: Callable[[str], None] | None = None,
     on_bar_long_press: Callable[[str], None] | None = None,
     remark: str = "",
@@ -151,7 +153,8 @@ def build_bar_chart_view(
                                 )
                             ],
                         )
-                    ]
+                    ],
+                    stretch=True,
                 )
             ],
         )
@@ -165,21 +168,29 @@ def build_bar_chart_view(
     if top <= 0:
         top = 1
 
-    display_texts = [
-        (
-            f"{value:.{decimals}f}"
-            if decimals > 0
-            else str(int(round(value)))
-        )
-        for value, _ in entries
-    ]
-    reserve = max(
-        text_width("00000000", size=12),
-        max(
-            (text_width(t, size=12) for t in display_texts),
-            default=0.0,
-        ),
-    ) + 12.0
+    display_texts = (
+        []
+        if hide_score
+        else [
+            (
+                f"{value:.{decimals}f}"
+                if decimals > 0
+                else str(int(round(value)))
+            )
+            for value, _ in entries
+        ]
+    )
+    reserve = (
+        12.0
+        if hide_score
+        else max(
+            text_width("00000000", size=12),
+            max(
+                (text_width(t, size=12) for t in display_texts),
+                default=0.0,
+            ),
+        ) + 12.0
+    )
 
     def available_width() -> float:
         page_w = float(page.width or 1000)
@@ -227,28 +238,60 @@ def build_bar_chart_view(
             except Exception:
                 pass
 
-        bar.on_hover = on_bar_hover
-        bar.on_click = (
-            lambda event, n=name: on_bar_click(n)
-            if on_bar_click is not None
-            else None
-        )
-        bar.tooltip = None if is_mobile(page) else name
         bars.append((bar, value))
-        display_value = display_texts[index]
+        text_w = (
+            0.0
+            if hide_score
+            else float(text_width(display_texts[index], size=12))
+        )
+        full = available_width()
+        # 命中区取柱子实际长度；只有短于 1/4 完整长度时才扩大。
+        hit_width = (
+            bar_width if bar_width >= full / 4.0 else full / 4.0
+        )
+        row_width = max(
+            hit_width,
+            bar_width + (8.0 + text_w if text_w else 0.0),
+        )
+        hit_layer = ft.Container(
+            width=hit_width,
+            height=22,
+            bgcolor=ft.Colors.TRANSPARENT,
+            tooltip=None if is_mobile(page) else name,
+            on_hover=lambda event, b=bar: on_bar_hover(event, b),
+            on_click=(
+                (lambda event, n=name: on_bar_click(n))
+                if on_bar_click is not None
+                else None
+            ),
+        )
+        stack_controls: list[ft.Control] = [bar, hit_layer]
+        if not hide_score:
+            # 分值文字绝对定位，保持与柱子 8px 间距且不参与命中。
+            stack_controls.append(
+                ft.Container(
+                    left=bar_width + 8.0,
+                    top=0,
+                    height=22,
+                    ignore_interactions=True,
+                    alignment=ft.Alignment.CENTER_LEFT,
+                    content=ui_text(
+                        display_texts[index],
+                        size=12,
+                        color=fg,
+                    ),
+                )
+            )
+        bar_row = ft.Stack(
+            width=row_width,
+            height=22,
+            clip_behavior=ft.ClipBehavior.NONE,
+            controls=stack_controls,
+        )
         column = ft.Column(
             spacing=2,
             controls=[
-                ft.Row(
-                    spacing=8,
-                    vertical_alignment=(
-                        ft.CrossAxisAlignment.CENTER
-                    ),
-                    controls=[
-                        bar,
-                        ui_text(display_value, size=12, color=fg),
-                    ],
-                ),
+                bar_row,
                 ui_text(
                     name,
                     size=11,
@@ -330,35 +373,34 @@ def build_bar_chart_view(
         route=route,
         appbar=build_appbar(),
         padding=page_padding(),
-        controls=[vertical_page(content_controls)],
+        controls=[vertical_page(content_controls, stretch=True)],
     )
     holder["view"] = view
 
-    previous_resize = page.on_resize
-
     def on_resize(event: ft.ControlEvent) -> None:
-        if view in page.views and page.views[-1] is view:
-            width = available_width()
-            changed = False
-            for bar, value in bars:
-                if value <= 0:
-                    new_width = 0.0
-                elif value >= top:
-                    new_width = width
-                else:
-                    new_width = max(4.0, width * value / top)
-                if abs(float(bar.width or 0) - new_width) > 1:
-                    bar.width = new_width
-                    changed = True
-            if changed:
-                try:
-                    holder_column.update()
-                except Exception:
-                    pass
-        if previous_resize is not None:
-            previous_resize(event)
+        # 仅栈顶响应
+        if view not in page.views or page.views[-1] is not view:
+            return
+        width = available_width()
+        changed = False
+        for bar, value in bars:
+            if value <= 0:
+                new_width = 0.0
+            elif value >= top:
+                new_width = width
+            else:
+                new_width = max(4.0, width * value / top)
+            if abs(float(bar.width or 0) - new_width) > 1:
+                bar.width = new_width
+                changed = True
+        if changed:
+            try:
+                holder_column.update()
+            except Exception:
+                pass
 
-    page.on_resize = on_resize
+    if route:
+        register_resize_handler(page, route, on_resize)
     if rebuild is not None:
         view.data = {"rebuild": rebuild}
     return view

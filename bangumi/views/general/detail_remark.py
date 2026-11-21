@@ -12,7 +12,6 @@ from bangumi.ui.layout import (
     page_padding,
     vertical_page,
 )
-from bangumi.views.navigation import REMARK, open_detail
 from bangumi.data.watched_data import Record, load_records
 
 
@@ -58,12 +57,3 @@ def build_remark_view(
     return view
 
 
-def open_remark_page(
-    page: ft.Page,
-    records: list[Record],
-    record: Record,
-    *,
-    value: str | None = None,
-) -> None:
-    """打开某条记录的只读备注页。"""
-    open_detail(page, records, record, REMARK, value=value)

@@ -14,6 +14,7 @@ from bangumi.ui.layout import (
     page_padding,
     vertical_page,
 )
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.data.quarter_core import (
     broadcast_dates,
     quarter_for_month,
@@ -291,24 +292,17 @@ def data_view(page: ft.Page) -> ft.View:
     view.data = {
         "rebuild": lambda: data_view(page)
     }
-    previous_resize = page.on_resize
-
     def on_resize(event: ft.ControlEvent | None = None) -> None:
-        if view in page.views:
-            fit_rows()
-            if page.views[-1] is view:
-                try:
-                    missing_holder.update()
-                except RuntimeError:
-                    return
-                return
-        if (
-            previous_resize is not None
-            and previous_resize is not on_resize
-        ):
-            previous_resize(event)
+        # 仅栈顶响应
+        if not page.views or page.views[-1] is not view:
+            return
+        fit_rows()
+        try:
+            missing_holder.update()
+        except RuntimeError:
+            return
 
-    page.on_resize = on_resize
+    register_resize_handler(page, "/statistics/data", on_resize)
     return view
 
 

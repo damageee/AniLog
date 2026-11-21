@@ -17,6 +17,10 @@ def watchlist_file() -> Path:
     return storage_directory() / "watchlist.json"
 
 
+def favorites_file() -> Path:
+    return storage_directory() / "favorites.json"
+
+
 def preferences_file() -> Path:
     return storage_directory() / "preferences.json"
 
@@ -38,3 +42,10 @@ def write_json(path: Path, value: Any) -> None:
         encoding="utf-8",
     )
     temporary_path.replace(path)
+    if path == table_file():
+        try:
+            from bangumi.data import prework
+
+            prework.invalidate()
+        except Exception:
+            pass

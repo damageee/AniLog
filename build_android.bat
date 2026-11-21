@@ -7,8 +7,8 @@ set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 
 set "BAT_RC=0"
-set APP_VERSION=0.1.0
-set APP_VERSION_LABEL=v1.0
+set APP_VERSION=0.2.0
+set APP_VERSION_LABEL=v2.0
 set EXCLUDES=storage chat_history.txt AGENTS.md Anilog_config.json bangumi.xlsx bangumi_import.xlsx fullfill.xlsx .cursor .gitignore AniLog.spec README.md requirements.txt build_windows.bat build_android.bat pack_windows.bat pack_windows_folder.bat dist __pycache__ icon.jpg icon.png icon_android.png tools
 
 rem --- HTTP proxy (Clash / v2rayN mixed port) ---

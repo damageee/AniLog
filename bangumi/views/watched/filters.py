@@ -119,7 +119,8 @@ class FilterMixin:
             return
         self._applied_filters = active
         self.current_page = 0
-        self.refresh(reset_scroll=True)
+        # 同时刷新工具栏 chips。
+        self.refresh(reset_scroll=True, update_header=True)
 
     def _change_filter_mode(self, index: int, mode: str) -> None:
         if not 0 <= index < len(self.filters):
@@ -161,7 +162,7 @@ class FilterMixin:
                     ft.DropdownOption(key=key, text=text)
                     for key, text in FILTER_MODES
                 ],
-                width=140,
+                width=200,
                 on_select=(
                     lambda event, i=index: (
                         self._change_filter_mode(i, event.control.value)
@@ -209,10 +210,14 @@ class FilterMixin:
             controls=[
                 ft.Button(
                     content=ui_text("添加筛选"),
+                    expand=True,
+                    height=40,
                     on_click=self._add_filter,
                 ),
                 ft.Button(
                     content=ui_text("清空筛选"),
+                    expand=True,
+                    height=40,
                     on_click=self._clear_filters,
                 ),
             ],

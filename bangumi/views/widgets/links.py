@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 import flet as ft
 from bangumi.ui.anim import animation
 from bangumi.ui.events import is_hover
@@ -20,9 +18,7 @@ from bangumi.ui.constants import (
     HOVER_SCALE_TAG,
 )
 from bangumi.views.navigation import (
-    AUTHOR,
     BROADCAST,
-    CAST,
     CATEGORY,
     DETAIL_FIELDS,
     STUDIO,
@@ -38,9 +34,7 @@ from bangumi.ui.tag_colors import (
     relative_luminance,
 )
 from bangumi.data.watched_data import (
-    AUTHOR_SEPARATOR,
     Record,
-    split_authors,
     split_tags,
 )
 
@@ -54,6 +48,18 @@ def _field_text(record: Record, kind: DetailKind) -> str:
 
 def _display_text(value: str) -> str:
     return str(value or "").replace("\n", " ")
+
+
+def _open_cast_homepage(
+    page: ft.Page,
+    records: list[Record],
+    cast: str,
+) -> None:
+    from bangumi.views.statistics.cast.homepage import (
+        open_cast_homepage,
+    )
+
+    open_cast_homepage(page, records, cast)
 
 
 def _highlight_bg(dark: bool, active: bool) -> str:
@@ -79,6 +85,8 @@ def highlight_spans(
     on_click=None,
     base_style: ft.TextStyle | None = None,
     match_style: ft.TextStyle | None = None,
+    active_style: ft.TextStyle | None = None,
+    highlight_bg: str = "",
 ) -> list[ft.TextSpan]:
     """将 ``text`` 拆分为片段，并高亮每个查询匹配项。"""
     if not query:
@@ -106,10 +114,18 @@ def highlight_spans(
             ft.TextSpan(
                 text[start:end],
                 style=(
-                    match_style
-                    if match_style is not None
-                    else ft.TextStyle(
-                        bgcolor=_highlight_bg(dark, active),
+                    active_style
+                    if active and active_style is not None
+                    else (
+                        match_style
+                        if match_style is not None
+                        else ft.TextStyle(
+                            bgcolor=(
+                                highlight_bg
+                                if highlight_bg
+                                else _highlight_bg(dark, active)
+                            ),
+                        )
                     )
                 ),
                 on_click=on_click,
@@ -186,13 +202,6 @@ def DetailLink(
             weight=weight,
         )
     def click(event: ft.ControlEvent) -> None:
-        if kind == AUTHOR:
-            from bangumi.views.general.detail_author import (
-                open_author_page,
-            )
-
-            open_author_page(page, records, display)
-            return
         if kind == CATEGORY:
             from bangumi.views.general.detail_category import (
                 open_category_page,
@@ -233,17 +242,6 @@ def _open_studio_company(
     open_studio_page(page, records, company)
 
 
-def _open_author(
-    page: ft.Page,
-    records: list[Record],
-    author: str,
-) -> None:
-    """打开共用的作者作品页，避免循环导入。"""
-    from bangumi.views.general.detail_author import open_author_page
-
-    open_author_page(page, records, author)
-
-
 def StudioLink(
     page: ft.Page,
     records: list[Record],
@@ -257,6 +255,9 @@ def StudioLink(
     highlight_query: str = "",
     highlight_start: int | None = None,
     highlight_end: int | None = None,
+    highlight_bg: str = "",
+    active_span: tuple[int, int] | None = None,
+    active_bg: str = "",
 ) -> ft.Control:
     """返回制作公司文本，使每个非空公司都可点击。"""
     display = _display_text(
@@ -341,8 +342,22 @@ def StudioLink(
                     highlight_query,
                     dark=dark,
                     offset=offset,
-                    active_start=highlight_start,
-                    active_end=highlight_end,
+                    active_start=(
+                        active_span[0]
+                        if active_span
+                        else highlight_start
+                    ),
+                    active_end=(
+                        active_span[1]
+                        if active_span
+                        else highlight_end
+                    ),
+                    highlight_bg=highlight_bg,
+                    active_style=(
+                        ft.TextStyle(bgcolor=active_bg)
+                        if active_span and active_bg
+                        else None
+                    ),
                     on_click=(
                         lambda event, c=company: (
                             _open_studio_company(
@@ -361,138 +376,28 @@ def StudioLink(
                     highlight_query,
                     dark=dark,
                     offset=offset,
-                    active_start=highlight_start,
-                    active_end=highlight_end,
+                    active_start=(
+                        active_span[0]
+                        if active_span
+                        else highlight_start
+                    ),
+                    active_end=(
+                        active_span[1]
+                        if active_span
+                        else highlight_end
+                    ),
+                    highlight_bg=highlight_bg,
+                    active_style=(
+                        ft.TextStyle(bgcolor=active_bg)
+                        if active_span and active_bg
+                        else None
+                    ),
                 )
             )
         offset += len(part)
         if index < len(parts) - 1:
             spans.append(ft.TextSpan("×"))
             offset += 1
-
-    return hover_link(
-        page,
-        ui_text(
-            "",
-            spans=spans,
-            size=size,
-            font_family=font_family,
-            color=text_color,
-            no_wrap=no_wrap,
-        ),
-        text_color,
-        None,
-    )
-
-
-def AuthorLink(
-    page: ft.Page,
-    records: list[Record],
-    record: Record,
-    *,
-    font_family: str = UI_FONT,
-    text: str | None = None,
-    size: int = 14,
-    color: str | None = None,
-    no_wrap: bool = False,
-    highlight_query: str = "",
-    highlight_start: int | None = None,
-    highlight_end: int | None = None,
-) -> ft.Control:
-    """返回作者文本，使每个非空作者都可点击。"""
-    display = _display_text(
-        _field_text(record, AUTHOR) if text is None else text
-    )
-    text_color = color or foreground_color(page)
-    if not split_authors(display):
-        return ui_text(
-            display,
-            size=size,
-            font_family=font_family,
-            color=text_color,
-            no_wrap=no_wrap,
-        )
-
-    if not highlight_query:
-        pieces: list[ft.Control] = []
-        parts = [
-            part
-            for part in re.split(r"[、\r\n]+", display)
-            if part.strip()
-        ]
-        for index, part in enumerate(parts):
-            author = part.strip()
-            if index:
-                pieces.append(
-                    ui_text(
-                        AUTHOR_SEPARATOR,
-                        size=size,
-                        font_family=font_family,
-                        color=text_color,
-                        no_wrap=no_wrap,
-                    )
-                )
-            pieces.append(
-                hover_link(
-                    page,
-                    ui_text(
-                        part,
-                        size=size,
-                        font_family=font_family,
-                        color=text_color,
-                        no_wrap=no_wrap,
-                    ),
-                    text_color,
-                    (
-                        lambda event, n=author: _open_author(
-                            page,
-                            records,
-                            n,
-                        )
-                    ),
-                )
-            )
-        return ft.Row(
-            wrap=True,
-            spacing=0,
-            run_spacing=2,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=pieces,
-        )
-
-    spans: list[ft.TextSpan] = []
-    parts = [
-        part
-        for part in re.split(r"[、\r\n]+", display)
-        if part.strip()
-    ]
-    dark = page.theme_mode == ft.ThemeMode.DARK
-    offset = 0
-    for index, part in enumerate(parts):
-        author = part.strip()
-        spans.extend(
-            highlight_spans(
-                part,
-                highlight_query,
-                dark=dark,
-                offset=offset,
-                active_start=highlight_start,
-                active_end=highlight_end,
-                on_click=(
-                    lambda event, n=author: (
-                        _open_author(
-                            page,
-                            records,
-                            n,
-                        )
-                    )
-                ),
-            )
-        )
-        offset += len(part)
-        if index < len(parts) - 1:
-            spans.append(ft.TextSpan(AUTHOR_SEPARATOR))
-            offset += len(AUTHOR_SEPARATOR)
 
     return hover_link(
         page,
@@ -593,11 +498,10 @@ def RoleLine(
                         ),
                         text_color,
                         (
-                            lambda event, value=cv: open_detail(
+                            lambda event, value=cv: _open_cast_homepage(
                                 page,
                                 records,
-                                {**record, "cast": value},
-                                CAST,
+                                value,
                             )
                         ),
                     )
@@ -620,25 +524,25 @@ def RoleLine(
 
     spans: list[ft.TextSpan] = [
         ft.TextSpan(name, on_click=role_click),
-        ft.TextSpan("("),
     ]
-    for index, cv in enumerate(cvs):
-        if index:
-            spans.append(ft.TextSpan("/"))
-        spans.append(
-            ft.TextSpan(
-                cv,
-                on_click=(
-                    lambda event, value=cv: open_detail(
-                        page,
-                        records,
-                        {**record, "cast": value},
-                        CAST,
-                    )
-                ),
+    if cvs:
+        spans.append(ft.TextSpan("("))
+        for index, cv in enumerate(cvs):
+            if index:
+                spans.append(ft.TextSpan("/"))
+            spans.append(
+                ft.TextSpan(
+                    cv,
+                    on_click=(
+                        lambda event, value=cv: _open_cast_homepage(
+                            page,
+                            records,
+                            value,
+                        )
+                    ),
+                )
             )
-        )
-    spans.append(ft.TextSpan(")"))
+        spans.append(ft.TextSpan(")"))
 
     text = ui_text(
         "",
@@ -715,6 +619,14 @@ def TagChip(
             pass
 
     chip.on_hover = on_hover
+
+    def reset_chip_hover() -> None:
+        # 只改属性，不 update：此时视图正在卸载。
+        chip.scale = 1.0
+
+    from bangumi.ui.hover_state import register
+
+    register(chip, reset_chip_hover)
     return chip
 
 
@@ -782,6 +694,9 @@ def BroadcastLink(
     highlight_query: str = "",
     highlight_start: int | None = None,
     highlight_end: int | None = None,
+    highlight_bg: str = "",
+    active_span: tuple[int, int] | None = None,
+    active_bg: str = "",
 ) -> ft.Control:
     """返回放送文本，使每个独立日期都可点击。"""
     display = _display_text(
@@ -812,8 +727,22 @@ def BroadcastLink(
                     highlight_query,
                     dark=dark,
                     offset=offset,
-                    active_start=highlight_start,
-                    active_end=highlight_end,
+                    active_start=(
+                        active_span[0]
+                        if active_span
+                        else highlight_start
+                    ),
+                    active_end=(
+                        active_span[1]
+                        if active_span
+                        else highlight_end
+                    ),
+                    highlight_bg=highlight_bg,
+                    active_style=(
+                        ft.TextStyle(bgcolor=active_bg)
+                        if active_span and active_bg
+                        else None
+                    ),
                     on_click=on_click,
                 ),
                 size=size,
@@ -861,8 +790,21 @@ def BroadcastLink(
                     highlight_query,
                     dark=dark,
                     offset=last,
-                    active_start=highlight_start,
-                    active_end=highlight_end,
+                    active_start=(
+                        active_span[0]
+                        if active_span
+                        else highlight_start
+                    ),
+                    active_end=(
+                        active_span[1]
+                        if active_span
+                        else highlight_end
+                    ),
+                    active_style=(
+                        ft.TextStyle(bgcolor=active_bg)
+                        if active_span and active_bg
+                        else None
+                    ),
                 )
             )
         date_text = match.group(0)
@@ -872,8 +814,21 @@ def BroadcastLink(
                 highlight_query,
                 dark=dark,
                 offset=match.start(),
-                active_start=highlight_start,
-                active_end=highlight_end,
+                active_start=(
+                    active_span[0]
+                    if active_span
+                    else highlight_start
+                ),
+                active_end=(
+                    active_span[1]
+                    if active_span
+                    else highlight_end
+                ),
+                active_style=(
+                    ft.TextStyle(bgcolor=active_bg)
+                    if active_span and active_bg
+                    else None
+                ),
                 on_click=(
                     lambda event, row=record, d=date_text: (
                         open_detail(
@@ -895,8 +850,21 @@ def BroadcastLink(
                 highlight_query,
                 dark=dark,
                 offset=last,
-                active_start=highlight_start,
-                active_end=highlight_end,
+                active_start=(
+                    active_span[0]
+                    if active_span
+                    else highlight_start
+                ),
+                active_end=(
+                    active_span[1]
+                    if active_span
+                    else highlight_end
+                ),
+                active_style=(
+                    ft.TextStyle(bgcolor=active_bg)
+                    if active_span and active_bg
+                    else None
+                ),
             )
         )
 

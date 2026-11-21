@@ -7,7 +7,11 @@ import re
 from bangumi.data.dates import earliest_broadcast_date
 from bangumi.data.ratings import is_valid_rating
 from bangumi.data.sorting import sort_detail_items
-from bangumi.data.watched_data import Record, entry_group_key
+from bangumi.data.watched_data import (
+    Record,
+    entry_group_key,
+    staff_display,
+)
 from .constants import DATA_TAG_SEPARATORS
 from .journey import _completion_date
 from .models import DetailItem
@@ -23,7 +27,7 @@ DATA_FIELDS: tuple[tuple[str, str], ...] = (
     ("category", "类型"),
     ("specification", "规格"),
     ("tag", "TAG"),
-    ("author", "作者"),
+    ("staff", "STAFF"),
     ("studio", "制作公司"),
     ("broadcast", "放送"),
     ("role", "角色"),
@@ -41,7 +45,12 @@ def data_coverage(records: list[Record]) -> tuple[int, int]:
     filled = 0
     for record in records:
         for field, _ in DATA_FIELDS:
-            if str(record.get(field) or "").strip():
+            text = (
+                staff_display(record)
+                if field == "staff"
+                else str(record.get(field) or "").strip()
+            )
+            if text:
                 filled += 1
     return filled, len(records) * len(DATA_FIELDS)
 
@@ -110,7 +119,11 @@ def data_missing_items(records: list[Record]) -> list[DetailItem]:
         missing = [
             label
             for field, label in DATA_FIELDS
-            if not str(record.get(field) or "").strip()
+            if not (
+                staff_display(record)
+                if field == "staff"
+                else str(record.get(field) or "").strip()
+            )
         ]
         if not missing:
             continue

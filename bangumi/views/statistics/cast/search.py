@@ -11,7 +11,7 @@ from bangumi.data.statistics.cast import cast_statistics
 from bangumi.views.statistics.common.shared import _accent
 from bangumi.views.general.virtual_search import virtual_search_page
 from bangumi.views.widgets.links import highlight_spans
-from .detail import _open_cast_page
+from .homepage import open_cast_homepage
 
 
 def cast_search_view(
@@ -26,7 +26,7 @@ def cast_search_view(
         cast, count, sample = item
 
         def on_click(event: ft.ControlEvent) -> None:
-            _open_cast_page(page, records, sample, cast)
+            open_cast_homepage(page, records, cast)
 
         return ft.Container(
             height=40,

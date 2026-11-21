@@ -11,6 +11,8 @@ from bangumi.ui.anim import animation
 
 from bangumi.core.utils import format_number
 from bangumi.data.preferences import Preferences
+from bangumi.ui import scroll_memory
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.data.quarter_core import earliest_broadcast_date
 from bangumi.data.watched_data import (
     Record,
@@ -32,8 +34,9 @@ from bangumi.ui.anim import (
 )
 from bangumi.ui.page_state import first_entry, mark_seen
 from bangumi.ui.tag_colors import FALLBACK_TAG_COLOR, is_valid_color
+from bangumi.views.widgets.toast import copyable_title
 from bangumi.ui.theme import ui_text
-from bangumi.ui.interaction import FloatingLabel
+from bangumi.ui.interaction import FloatingLabel, hover_link
 from bangumi.views.navigation import ENTRY, open_detail, push_view
 from bangumi.data.statistics.studios_honor import (
     _honor_rating,
@@ -46,6 +49,7 @@ from bangumi.views.statistics.common.shared import (
     JOURNEY_TOP,
     _accent,
     _back_view,
+    range_label,
 )
 from bangumi.views.widgets.stat_card import stat_card
 from bangumi.ui.constants import (
@@ -345,7 +349,10 @@ def _studio_overview_view(
         index = max(0, min(19, int(x // slot))) if slot else 0
         start = index * 5
         end = min(100, start + 5)
-        hist_label.show(event, f"{start}~{end}")
+        count = bins[index]
+        hist_label.show(
+            event, f"{range_label(start, end)} · {count} 个"
+        )
         current = active_hist["bar"]
         if current is not None:
             scale_hist(current, False)
@@ -362,8 +369,9 @@ def _studio_overview_view(
     for index in range(20):
         start = index * 5
         end = min(100, start + 5)
-        range_text = f"{start}~{end}"
+        range_text = range_label(start, end)
         count = bins[index]
+        label_text = f"{range_text} · {count} 个"
         colored = ft.Container(
             width=slot - 6,
             height=(
@@ -391,49 +399,45 @@ def _studio_overview_view(
         )
         colored.scale = 1.0
         if count > 0:
-            colored.on_hover = (
-                lambda event, b=colored: _bar_hover(b, event)
+            bar_h = max(1.0, count / max_bin * bar_height)
+            # 命中高度取柱高；短于 1/4 完整高度时才扩大。
+            hit_h = max(bar_h, JOURNEY_HEIGHT / 4.0)
+            hit_layer = ft.Container(
+                width=slot - 6,
+                height=hit_h,
+                bgcolor=ft.Colors.TRANSPARENT,
+                on_hover=lambda event, b=colored: _bar_hover(
+                    b, event
+                ),
+                on_click=(
+                    lambda event, s=start, e=end: _open_studio_range(
+                        page,
+                        records,
+                        name,
+                        company_records,
+                        s,
+                        e,
+                    )
+                ),
             )
-            colored.on_click = (
-                lambda event, s=start, e=end: _open_studio_range(
-                    page,
-                    records,
-                    name,
-                    company_records,
-                    s,
-                    e,
-                )
+            colored.bottom = 0.0
+            slot_content = ft.Stack(
+                width=slot - 6,
+                height=hit_h,
+                controls=[colored, hit_layer],
             )
+        else:
+            slot_content = ft.Container(width=slot - 6, height=0)
         slot_container = ft.Container(
             width=slot,
             height=JOURNEY_HEIGHT,
             alignment=ft.Alignment.BOTTOM_CENTER,
             tooltip=(
-                range_text
+                label_text
                 if count > 0 and not is_mobile(page)
                 else None
             ),
-            on_click=(
-                (
-                    lambda event, s=start, e=end: (
-                        _open_studio_range(
-                            page,
-                            records,
-                            name,
-                            company_records,
-                            s,
-                            e,
-                        )
-                    )
-                )
-                if count > 0
-                else None
-            ),
-            content=(
-                colored
-                if count > 0
-                else ft.Container(width=slot - 6, height=0)
-            ),
+            content=slot_content,
         )
         bar_slots.append(slot_container)
         slot_bars.append(colored if count > 0 else None)
@@ -655,16 +659,16 @@ def _studio_overview_view(
                         ft.Container(
                             expand=True,
                             alignment=ft.Alignment.CENTER_LEFT,
-                            content=ft.Container(
-                                on_click=(
-                                    lambda event, r=record: open_detail(
-                                        page, records, r, ENTRY
-                                    )
-                                ),
-                                content=ui_text(
+                            content=hover_link(
+                                page,
+                                ui_text(
                                     title,
                                     size=14,
                                     color=fg,
+                                ),
+                                fg,
+                                lambda event, r=record: open_detail(
+                                    page, records, r, ENTRY
                                 ),
                             ),
                         ),
@@ -734,12 +738,15 @@ def _studio_overview_view(
             )
         ],
     )
-    return _back_view(
+    view = _back_view(
         page,
         route=route,
         title=name,
         controls=[vertical_page([centered], stretch=True)],
     )
+    if view.appbar is not None:
+        view.appbar.title = copyable_title(page, name)
+    return view
 
 
 def open_studio_page(
@@ -795,24 +802,34 @@ def open_studio_page(
     }
     push_view(page, state["view"])
 
-    previous_resize = page.on_resize
-
     def on_resize(event: ft.ControlEvent) -> None:
-        current = state["view"]
-        if current is not None and current in page.views:
-            if page.views[-1] is current:
-                index = page.views.index(current)
-                new_view = build_overview()
-                page.views[index] = new_view
-                state["view"] = new_view
-                try:
-                    page.update()
-                except RuntimeError:
-                    return
+        # 按 route 判断栈顶，重建后仍能继续响应。
         if (
-            previous_resize is not None
-            and previous_resize is not on_resize
+            not page.views
+            or str(getattr(page.views[-1], "route", "")) != route
         ):
-            previous_resize(event)
+            return
+        view = state["view"]
+        if view is None or view not in page.views:
+            return
+        new_view = build_overview()
+        # 复用旧视图与滚动容器，避免滚动条闪回。
+        if view.controls and new_view.controls:
+            old_column = view.controls[0]
+            new_column = new_view.controls[0]
+            try:
+                old_column.controls = new_column.controls
+            except Exception:
+                view.controls = new_view.controls
+        else:
+            view.controls = new_view.controls
+        view.appbar = new_view.appbar
+        view.padding = new_view.padding
+        if isinstance(new_view.data, dict):
+            view.data.update(new_view.data)
+        # 覆盖重建过程中可能注册的新 handler，保证后续 resize 继续执行。
+        register_resize_handler(page, route, on_resize)
+        page.update()
+        scroll_memory.schedule_restore(page)
 
-    page.on_resize = on_resize
+    register_resize_handler(page, route, on_resize)

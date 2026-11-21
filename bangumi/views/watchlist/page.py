@@ -1,4 +1,4 @@
-"""已追 watchlist page: two resizable columns with drag reordering."""
+"""已追页面：左右两列，支持拖动排序。"""
 
 from __future__ import annotations
 
@@ -15,8 +15,9 @@ import requests
 from bangumi.data.preferences import Preferences
 from bangumi.ui.tag_colors import sync_tag_colors
 from bangumi.ui.text_metrics import text_width
-from bangumi.ui.theme import ui_text
+from bangumi.ui.theme import ui_text, ui_text_style
 from bangumi.ui.colors import (
+    background_color,
     foreground_color,
 )
 from bangumi.ui.feedback import (
@@ -26,6 +27,7 @@ from bangumi.views.navigation import (
     go_back,
     push_view,
 )
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.ui.interaction import (
     back_icon,
     hover_icon,
@@ -50,16 +52,19 @@ from bangumi.data.watched_data import (
 from bangumi.ui.platform import is_compact_layout
 from bangumi.ui.events import is_hover, event_position
 from bangumi.views.watchlist.constants import *
-from bangumi.views.watchlist.layout import button_width, list_height
+from bangumi.views.watchlist.layout import (
+    button_width,
+    divider_gap,
+    list_height,
+)
 from bangumi.views.watchlist.utils import (
     fit_label,
+    load_bilibili_uid,
     save_bilibili_uid,
 )
-from bangumi.views.watchlist.import_bilibili import (
+from bangumi.services.bilibili_import import (
     BilibiliImportError,
-    fetch_bilibili_watching,
-    open_bilibili_import,
-    show_import_result,
+    fetch_bilibili_following,
 )
 from bangumi.views.widgets.virtual_window import (
     clamp_scroll,
@@ -114,9 +119,17 @@ class WatchlistPage:
         self._slot_stacks: dict[str, ft.Stack] = {}
         self._scroll_lists: dict[str, ft.Column] = {}
         self._resize_token = 0
+        self._layout_token = 0
+        self._layout_width = 0.0
+        self._layout_busy = False
+        self._layout_bucket = (
+            "compact" if is_compact_layout(page) else "normal"
+        )
+        self._half_widths: dict[str, float] = {}
+        self._dice_container: ft.Container | None = None
+        self._divider_container: ft.Container | None = None
         self._last_width = self._button_width()
-        self._previous_resize = page.on_resize
-        page.on_resize = self._on_resize
+        register_resize_handler(page, "/watchlist", self._on_resize)
         self.columns_host = ft.Column(
             spacing=0,
             horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
@@ -172,23 +185,74 @@ class WatchlistPage:
         self.columns_host.controls = [self._build_columns()]
 
     def _on_resize(self, event=None) -> None:
-        if self.view not in self.page.views:
-            return
-        width = self._button_width()
-        if width == self._last_width:
-            return
-        self._last_width = width
-        self._resize_token += 1
-        self.page.run_task(self._apply_resize, self._resize_token)
+        # 仅栈顶响应；断点变化必须重建，否则宽度差 ≥8px 才重建。
         if (
-            self._previous_resize is not None
-            and self._previous_resize is not self._on_resize
+            not self.page.views
+            or self.page.views[-1] is not self.view
         ):
-            self._previous_resize(event)
+            return
+        bucket = (
+            "compact"
+            if is_compact_layout(self.page)
+            else "normal"
+        )
+        changed = bucket != self._layout_bucket
+        if changed:
+            self._layout_bucket = bucket
+        target = float(self._button_width())
+        if not changed:
+            measured = (
+                self._half_widths.get(HALF_HIGH)
+                or self._half_widths.get(HALF_LOW)
+            )
+            if measured and abs(target - self._layout_width) < 8.0:
+                return
+        self.schedule_layout(target)
 
-    async def _apply_resize(self, token: int) -> None:
-        # await asyncio.sleep(0.05)
-        if token != self._resize_token:
+    def schedule_layout(self, width: float) -> None:
+        """统一防抖：0.12s 内只保留最后一次，容差 2px。"""
+        if self._layout_busy:
+            return
+        if abs(width - self._layout_width) < 2.0:
+            return
+        self._layout_token += 1
+        token = self._layout_token
+        self.page.run_task(self._apply_layout, token, width)
+
+    async def _apply_layout(self, token: int, width: float) -> None:
+        await asyncio.sleep(0.2)
+        if token != self._layout_token or self._layout_busy:
+            return
+        # 执行时按当前宽度重新计算目标。
+        width = float(self._button_width())
+        if abs(width - self._layout_width) < 2.0:
+            return
+        self._layout_busy = True
+        try:
+            self._layout_width = width
+            self._last_width = int(width)
+            offsets = dict(self._scroll_pixels)
+            self._render_columns(preserve_scroll=True)
+            # 不逐个 await，减少客户端刷新次数。
+            for half, column in self._scroll_lists.items():
+                self.page.run_task(
+                    column.scroll_to,
+                    offsets.get(half, 0.0),
+                )
+            self.page.update()
+            # 留一点时间让测量事件走完，避免重建反馈环。
+            await asyncio.sleep(0.12)
+        except Exception:
+            pass
+        finally:
+            self._layout_busy = False
+
+    def _on_shown(self) -> None:
+        """返回已追页时重算虚拟窗口并恢复滚动位置。"""
+        if (
+            not self.page.views
+            or self.page.views[-1] is not self.view
+        ):
             return
         offsets = dict(self._scroll_pixels)
         self._render_columns(preserve_scroll=True)
@@ -196,6 +260,13 @@ class WatchlistPage:
             self.columns_host.update()
         except RuntimeError:
             return
+        self.page.run_task(self._restore_after_shown, offsets)
+
+    async def _restore_after_shown(
+        self,
+        offsets: dict[str, float],
+    ) -> None:
+        await asyncio.sleep(0.05)
         for half, column in self._scroll_lists.items():
             try:
                 await column.scroll_to(
@@ -217,13 +288,18 @@ class WatchlistPage:
         text = getattr(field, "value", "") if field is not None else ""
         return bool(str(text or "").strip())
 
-    def _button_width(self) -> int:
+    def _button_width(self, half: str | None = None) -> int:
         page_width = self.page.width or DEFAULT_PAGE_WIDTH
         max_label = text_width(
             "中" * MAX_LABEL_CHARS,
             size=LABEL_SIZE,
         )
-        return button_width(page_width, max_label)
+        measured = None
+        if half is not None:
+            measured = self._half_widths.get(half)
+        elif self._half_widths:
+            measured = min(self._half_widths.values())
+        return button_width(page_width, max_label, measured)
 
     def _filtered(self, items: list[str]) -> list[str]:
         if not self.search_query:
@@ -394,38 +470,44 @@ class WatchlistPage:
         stack.controls = list(slot_views.values())
         stack.update()
 
-    def _build_columns(self) -> ft.Row:
+    def _build_columns(self) -> ft.Column:
         foreground = foreground_color(self.page)
         drag_enabled = not self._search_active()
-        return ft.Row(
-            spacing=SIDE_GAP,
+        page_width = float(self.page.width or 1000)
+        gap = divider_gap(page_width)
+        android = is_compact_layout(self.page)
+        list_height = self._list_height()
+        divider_color = ft.Colors.with_opacity(0.35, foreground)
+        # 标题行 + 列表行共用一条竖线，骰子放到下面的按钮行。
+        title_row = ft.Row(
+            spacing=gap,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                self._half_title(HALF_HIGH, foreground),
+                ft.Container(
+                    width=DIVIDER_WIDTH,
+                    height=TITLE_HEIGHT,
+                    bgcolor=divider_color,
+                ),
+                self._half_title(HALF_LOW, foreground),
+            ],
+        )
+        list_row = ft.Row(
+            spacing=gap,
             vertical_alignment=ft.CrossAxisAlignment.START,
             controls=[
-                self._build_half(
+                self._build_half_list(
                     HALF_HIGH,
                     self._filtered(self.high),
                     HIGH_COLOR,
                     drag_enabled=drag_enabled,
                 ),
-                ft.Column(
-                    width=DICE_SIZE,
-                    height=HALF_HEIGHT,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    spacing=6,
-                    controls=[
-                        ft.Container(
-                            width=DIVIDER_WIDTH,
-                            expand=True,
-                            bgcolor=ft.Colors.with_opacity(
-                                0.35,
-                                foreground,
-                            ),
-                        ),
-                        self._build_dice_button(),
-                        self._build_dice_image(),
-                    ],
+                ft.Container(
+                    width=DIVIDER_WIDTH,
+                    height=list_height,
+                    bgcolor=divider_color,
                 ),
-                self._build_half(
+                self._build_half_list(
                     HALF_LOW,
                     self._filtered(self.low),
                     LOW_COLOR,
@@ -433,8 +515,143 @@ class WatchlistPage:
                 ),
             ],
         )
+        button_row = ft.Row(
+            spacing=gap,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Container(
+                    expand=1,
+                    alignment=ft.Alignment.CENTER,
+                    content=self._half_buttons(HALF_HIGH, android),
+                ),
+                ft.Container(
+                    width=self._dice_px(),
+                    content=ft.Column(
+                        spacing=4,
+                        horizontal_alignment=(
+                            ft.CrossAxisAlignment.CENTER
+                        ),
+                        controls=[
+                            self._build_dice_button(),
+                            self._build_bilibili_image(),
+                        ],
+                    ),
+                ),
+                ft.Container(
+                    expand=1,
+                    alignment=ft.Alignment.CENTER,
+                    content=self._half_buttons(HALF_LOW, android),
+                ),
+            ],
+        )
+        return ft.Column(
+            spacing=0,
+            controls=[
+                title_row,
+                list_row,
+                ft.Container(height=8),
+                button_row,
+            ],
+        )
 
-    def _build_half(
+    def _usable_width(self) -> float:
+        """优先用左右半列实测宽度推算可用宽度。"""
+        gap = divider_gap(float(self.page.width or 1000))
+        measured = [
+            value
+            for value in self._half_widths.values()
+            if value and value > 0
+        ]
+        if measured:
+            return max(
+                1.0,
+                sum(measured[:2])
+                + DIVIDER_WIDTH
+                + gap * 2,
+            )
+        page_width = float(self.page.width or 1000)
+        return max(
+            1.0,
+            page_width - PAGE_HORIZONTAL_PADDING * 2,
+        )
+
+    def _dice_px(self, usable: float | None = None) -> float:
+        """可用宽度 < 420 时骰子缩到 36px，避免遮挡按钮。"""
+        if usable is None:
+            usable = self._usable_width()
+        return 36.0 if usable < 420.0 else float(DICE_SIZE)
+
+    def _divider_height(self, dice_px: float) -> float:
+        """竖线止于骰子块上方，避免穿模。"""
+        block = dice_px + 4.0 + dice_px
+        return max(0.0, HALF_HEIGHT - block - 8.0)
+
+    def _sync_middle(self) -> None:
+        """按实测宽度更新骰子位置与竖线高度。"""
+        if (
+            self._dice_container is None
+            or self._divider_container is None
+        ):
+            return
+        usable = self._usable_width()
+        dice_px = self._dice_px(usable)
+        self._dice_container.width = dice_px
+        self._dice_container.left = max(
+            0.0, (usable - dice_px) / 2
+        )
+        self._divider_container.height = self._divider_height(
+            dice_px
+        )
+        for control in (
+            self._dice_container,
+            self._divider_container,
+        ):
+            try:
+                control.update()
+            except Exception:
+                pass
+
+    def _on_half_size(
+        self,
+        half: str,
+        event: ft.ControlEvent,
+    ) -> None:
+        """只记录实测宽度并调度；不在回调里直接重建。"""
+        width = float(getattr(event, "width", 0) or 0)
+        if width <= 0:
+            return
+        self._half_widths[half] = width
+        if self._layout_busy:
+            return
+        self.schedule_layout(float(self._button_width(half)))
+
+    def _half_title(self, half: str, foreground: str) -> ft.Container:
+        return ft.Container(
+            expand=1,
+            height=TITLE_HEIGHT,
+            alignment=ft.Alignment.CENTER,
+            content=ui_text(
+                "高优先级" if half == HALF_HIGH else "低优先级",
+                size=16,
+                weight=ft.FontWeight.BOLD,
+                color=foreground,
+            ),
+        )
+
+    def _half_buttons(self, half: str, android: bool) -> ft.Container:
+        return ft.Container(
+            height=(
+                ANDROID_BUTTON_AREA_HEIGHT
+                if android
+                else BUTTON_ROW_HEIGHT
+            ),
+            content=self._build_button_row(
+                half,
+                self._items(half),
+            ),
+        )
+
+    def _build_half_list(
         self,
         half: str,
         items: list[str],
@@ -442,7 +659,9 @@ class WatchlistPage:
         *,
         drag_enabled: bool,
     ) -> ft.Container:
-        width = self._button_width()
+        width = self._button_width(half)
+        # 记录本次渲染实际使用的宽度，供下次比对。
+        self._half_widths[half] = float(width)
         step = BUTTON_HEIGHT + BUTTON_SPACING
         count = len(items)
         list_height = self._list_height()
@@ -463,11 +682,6 @@ class WatchlistPage:
             )
         self._slot_views[half] = slot_views
         self._window_first[half] = first
-        foreground = foreground_color(self.page)
-        android = is_compact_layout(self.page)
-        button_area_height = (
-            ANDROID_BUTTON_AREA_HEIGHT if android else BUTTON_ROW_HEIGHT
-        )
         stack = ft.Stack(
             width=width,
             height=content_height,
@@ -476,9 +690,7 @@ class WatchlistPage:
         self._slot_stacks[half] = stack
         column = ft.Column(
             spacing=0,
-            horizontal_alignment=(
-                ft.CrossAxisAlignment.CENTER
-            ),
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             scroll=ft.ScrollMode.HIDDEN,
             on_scroll=(
                 lambda event, h=half: self._on_list_scroll(
@@ -492,36 +704,12 @@ class WatchlistPage:
         return ft.Container(
             expand=True,
             alignment=ft.Alignment.TOP_CENTER,
-            content=ft.Column(
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=HALF_GAP,
-                controls=[
-                    ft.Container(
-                        height=TITLE_HEIGHT,
-                        alignment=ft.Alignment.CENTER,
-                        content=ui_text(
-                            (
-                                "高优先级"
-                                if half == HALF_HIGH
-                                else "低优先级"
-                            ),
-                            size=16,
-                            weight=ft.FontWeight.BOLD,
-                            color=foreground,
-                        ),
-                    ),
-                    ft.Container(
-                        height=list_height,
-                        content=column,
-                    ),
-                    ft.Container(
-                        height=button_area_height,
-                        content=self._build_button_row(
-                            half,
-                            self._items(half),
-                        ),
-                    ),
-                ],
+            on_size_change=(
+                lambda event, h=half: self._on_half_size(h, event)
+            ),
+            content=ft.Container(
+                height=list_height,
+                content=column,
             ),
         )
 
@@ -619,10 +807,12 @@ class WatchlistPage:
         button.on_hover = on_hover
         gesture = ft.GestureDetector(
             content=button,
-            on_double_tap=(
-                lambda event, n=name, h=half: self._open_detail(
-                    n,
-                    h,
+            # 单击打开详情；拖拽进行中不响应。
+            on_tap=(
+                lambda event, n=name, h=half: (
+                    self._open_detail(n, h)
+                    if self._drag_state is None
+                    else None
                 )
             ),
         )
@@ -805,27 +995,30 @@ class WatchlistPage:
         return fit_label(name, width)
 
     def _build_dice_button(self) -> ft.Control:
+        dice_px = self._dice_px()
+        icon_size = 24 if dice_px < 48 else 32
         return hover_icon(
             self.page,
             ft.Icons.CASINO,
-            size=32,
-            padding=max(0, int((DICE_SIZE - 32) / 2)),
+            size=icon_size,
+            padding=max(0, int((dice_px - icon_size) / 2)),
             disabled=not (self.high or self.low),
             on_click=lambda event: self._roll_dice(),
         )
 
-    def _build_dice_image(self) -> ft.Control:
+    def _build_bilibili_image(self) -> ft.Control:
+        bilibili_px = self._dice_px()
         return ft.Container(
-            width=DICE_SIZE,
-            height=DICE_SIZE,
+            width=bilibili_px,
+            height=bilibili_px,
             alignment=ft.Alignment.CENTER,
             on_click=self._open_bilibili_import,
             content=hover_zoom(
                 self.page,
                 ft.Image(
                     src="/pic/bilibili.png",
-                    width=DICE_SIZE,
-                    height=DICE_SIZE,
+                    width=bilibili_px,
+                    height=bilibili_px,
                     fit=ft.BoxFit.CONTAIN,
                 ),
                 scale=1.2
@@ -848,8 +1041,10 @@ class WatchlistPage:
     ) -> None:
         try:
             titles = await asyncio.to_thread(
-                fetch_bilibili_watching,
+                fetch_bilibili_following,
                 uid,
+                # 1=想看，2=在看
+                {1, 2},
             )
         except BilibiliImportError as error:
             self._show_import_result("导入失败", str(error))
@@ -867,7 +1062,7 @@ class WatchlistPage:
         if not titles:
             self._show_import_result(
                 "导入失败",
-                "该用户没有正在看的追番",
+                "该用户没有想看/在看的追番",
             )
             return
 
@@ -1052,9 +1247,170 @@ class WatchlistPage:
         save_watchlist(self.high, self.low)
 
 
+def open_bilibili_import(page: ft.Page, on_import) -> None:
+    """弹出 Bilibili 追番导入对话框（UID 与优先级）。"""
+    foreground = foreground_color(page)
+    uid_field = ft.TextField(
+        width=180,
+        height=40,
+        value=load_bilibili_uid(),
+        hint_text="请输入UID",
+        input_filter=ft.NumbersOnlyInputFilter(),
+        text_size=14,
+        border_radius=8,
+        content_padding=ft.Padding.symmetric(
+            horizontal=10,
+            vertical=8,
+        ),
+    )
+    error_text = ui_text(
+        "",
+        size=12,
+        color=ft.Colors.RED,
+        visible=False,
+    )
+    target = {"high": False}
+    toggle = ft.Button(content=ui_text("低优先级"))
+
+    def toggle_target(event: ft.ControlEvent) -> None:
+        target["high"] = not target["high"]
+        toggle.content = ui_text(
+            "高优先级" if target["high"] else "低优先级"
+        )
+        toggle.update()
+
+    toggle.on_click = toggle_target
+
+    def confirm(event: ft.ControlEvent) -> None:
+        uid = (uid_field.value or "").strip()
+        if not uid:
+            error_text.value = "请输入UID"
+            error_text.visible = True
+            error_text.update()
+            return
+        half = "high" if target["high"] else "low"
+        page.pop_dialog()
+        page.run_task(on_import, uid, half)
+
+    def cancel(event: ft.ControlEvent) -> None:
+        page.pop_dialog()
+
+    page.show_dialog(
+        ft.AlertDialog(
+            modal=True,
+            bgcolor=background_color(page),
+            title=ui_text(
+                "导入 Bilibili 追番",
+                weight=ft.FontWeight.BOLD,
+                color=foreground,
+            ),
+            title_text_style=ui_text_style(
+                color=foreground,
+                weight=ft.FontWeight.BOLD,
+            ),
+            content_text_style=ui_text_style(color=foreground),
+            content=ft.Container(
+                width=min(
+                    360.0,
+                    max(240.0, float(page.width or 400) * 0.82),
+                ),
+                content=ft.Column(
+                    tight=True,
+                    spacing=12,
+                    controls=[
+                        ft.Row(
+                            [
+                                ui_text(
+                                    "UID",
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                uid_field,
+                            ],
+                            spacing=12,
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
+                        ),
+                        error_text,
+                        ft.Row(
+                            [
+                                ui_text(
+                                    "导入至",
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                toggle,
+                            ],
+                            spacing=12,
+                            vertical_alignment=(
+                                ft.CrossAxisAlignment.CENTER
+                            ),
+                        ),
+                    ],
+                ),
+            ),
+            actions=[
+                ft.Button(
+                    content=ui_text("取消"),
+                    on_click=cancel,
+                ),
+                ft.Button(
+                    content=ui_text(
+                        "确认",
+                        color=ft.Colors.WHITE,
+                    ),
+                    bgcolor=ft.Colors.BLUE,
+                    on_click=confirm,
+                ),
+            ],
+        )
+    )
+
+
+def show_import_result(
+    page: ft.Page,
+    title: str,
+    message: str,
+) -> None:
+    """显示导入结果弹窗。"""
+    foreground = foreground_color(page)
+
+    def close(event: ft.ControlEvent) -> None:
+        page.pop_dialog()
+
+    page.show_dialog(
+        ft.AlertDialog(
+            modal=True,
+            bgcolor=background_color(page),
+            title=ui_text(
+                title,
+                weight=ft.FontWeight.BOLD,
+                color=foreground,
+            ),
+            title_text_style=ui_text_style(
+                color=foreground,
+                weight=ft.FontWeight.BOLD,
+            ),
+            content=ui_text(message, color=foreground),
+            content_text_style=ui_text_style(color=foreground),
+            actions=[
+                ft.Button(
+                    content=ui_text("关闭"),
+                    on_click=close,
+                ),
+            ],
+        )
+    )
+
+
 def watchlist_view(page: ft.Page) -> ft.View:
     instance = WatchlistPage(page)
-    instance.view.data = {
-        "rebuild": lambda: watchlist_view(page)
-    }
+    # 合并写入，保留可能的其它字段。
+    data = (
+        instance.view.data
+        if isinstance(instance.view.data, dict)
+        else {}
+    )
+    data["rebuild"] = lambda: watchlist_view(page)
+    data["on_shown"] = instance._on_shown
+    instance.view.data = data
     return instance.view

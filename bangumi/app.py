@@ -10,7 +10,7 @@ import flet as ft
 from bangumi.data.preferences import Preferences
 from bangumi.ui.platform import is_compact_layout
 from bangumi.ui.theme import FONT_ASSETS, app_theme
-from bangumi.ui import scroll_memory
+from bangumi.ui import scroll_memory, view_state
 from bangumi.ui.interaction import (
     hover_icon,
     scroll_bottom_action,
@@ -24,17 +24,21 @@ from bangumi.views import (
     watched_view,
     watchlist_view,
 )
+from bangumi.views.favorites import favorites_view
+from bangumi.views.navigation import view_cache
 from bangumi.data.watched_data import (
     dedupe_record_tags,
     load_records,
     save_records,
     sync_sequel_groups,
 )
+from bangumi.data import prework
 
 ROUTES = {
     "/watched": watched_view,
     "/watchlist": watchlist_view,
     "/season": season_view,
+    "/favorites": favorites_view,
     "/statistics": statistics_view,
     "/settings": settings_view,
 }
@@ -129,6 +133,15 @@ class _HomeIconViews(list):
         self._refreshing = False
         self._defer_refresh = False
 
+    @staticmethod
+    def _skip_prev_refresh(view: object) -> bool:
+        """视图声明 skip_prev_refresh 时，返回后不重建下层页面。"""
+        data = getattr(view, "data", None)
+        return (
+            isinstance(data, dict)
+            and data.get("skip_prev_refresh") is True
+        )
+
     def defer_refresh(self) -> None:
         self._defer_refresh = True
 
@@ -142,25 +155,97 @@ class _HomeIconViews(list):
         self._defer_refresh = False
         self._refresh_top()
 
+    def _notify_shown(self) -> None:
+        """栈顶变化后通知新栈顶视图（用于 keep_alive 页面恢复）。"""
+        if not self:
+            return
+        top = self[-1]
+        data = getattr(top, "data", None)
+        handler = (
+            data.get("on_shown") if isinstance(data, dict) else None
+        )
+        if callable(handler):
+            try:
+                handler()
+            except Exception:
+                pass
+
+    def _notify_closed(self, views) -> None:
+        """视图被移出栈时通知其清理状态（返回首页等）。"""
+        for view in views:
+            data = getattr(view, "data", None)
+            handler = (
+                data.get("on_close")
+                if isinstance(data, dict)
+                else None
+            )
+            if callable(handler):
+                try:
+                    handler()
+                except Exception:
+                    pass
+
     def append(self, view: ft.View) -> None:
         _attach_home_action(self._page, view)
         super().append(view)
+        # 只保留栈顶控件树，下层视图卸载。
+        view_cache.stash_hidden(self._page)
 
     def pop(self, index=-1):
         item = super().pop(index)
-        if not self._defer_refresh:
+        view_cache.forget(item)
+        view_cache.stash_hidden(self._page)
+        self._notify_closed([item])
+        view_state.forget(item)
+        self._notify_shown()
+        if (
+            not self._defer_refresh
+            and not self._skip_prev_refresh(item)
+        ):
             self._refresh_top()
         return item
 
     def remove(self, item):
         super().remove(item)
-        if not self._defer_refresh:
+        view_cache.forget(item)
+        view_cache.stash_hidden(self._page)
+        self._notify_closed([item])
+        view_state.forget(item)
+        self._notify_shown()
+        if (
+            not self._defer_refresh
+            and not self._skip_prev_refresh(item)
+        ):
             self._refresh_top()
 
     def __delitem__(self, index):
+        # 记录被删区间里的最后一个视图，用于判断是否跳过刷新。
+        if isinstance(index, slice):
+            removed = self[index]
+            last = removed[-1] if removed else None
+        else:
+            removed = [self[index]]
+            last = self[index]
         super().__delitem__(index)
-        if not self._defer_refresh:
+        for view in removed:
+            view_cache.forget(view)
+        view_cache.stash_hidden(self._page)
+        self._notify_closed(removed)
+        for view in removed:
+            view_state.forget(view)
+        self._notify_shown()
+        if (
+            not self._defer_refresh
+            and not self._skip_prev_refresh(last)
+        ):
             self._refresh_top()
+
+    def clear(self) -> None:
+        # 清空栈时同步丢弃所有暂存与页面状态。
+        for view in list(self):
+            view_cache.forget(view)
+            view_state.forget(view)
+        super().clear()
 
     def _refresh_top(self) -> None:
         if self._refreshing or not self:
@@ -210,6 +295,8 @@ class _HomeIconViews(list):
         if isinstance(new_view.data, dict):
             data.update(new_view.data)
             top.data = data
+        # 临时构造的 View 不留在栈中，同步丢弃其页面状态。
+        view_state.forget(new_view)
         self._page.update()
         scroll_memory.schedule_restore(self._page)
 
@@ -297,6 +384,7 @@ def install_escape_back(page: ft.Page) -> None:
 
 
 def main(page: ft.Page) -> None:
+    records: list = []
     try:
         records = load_records()
         changed = sync_sequel_groups(records)
@@ -304,6 +392,11 @@ def main(page: ft.Page) -> None:
             changed = True
         if changed:
             save_records(records)
+    except Exception:
+        pass
+
+    try:
+        prework.precompute(records)
     except Exception:
         pass
 
@@ -374,6 +467,12 @@ def main(page: ft.Page) -> None:
             _ensure_rebuild(page, view, builder)
             page.views.append(view)
         views_initialized = True
+        # 先按栈顶同步 resize 订阅，再与重建结果一起下发。
+        from bangumi.views.navigation.stack import (
+            sync_resize_subscription as _sync_resize,
+        )
+
+        _sync_resize(page)
         try:
             page.update()
         except RuntimeError:
@@ -385,6 +484,12 @@ def main(page: ft.Page) -> None:
             defer()
         if event.view is not None and event.view in page.views:
             page.views.remove(event.view)
+        from bangumi.views.navigation.stack import (
+            sync_resize_subscription,
+        )
+
+        # 先同步订阅，再与视图移除在同一次 update 中下发。
+        sync_resize_subscription(page)
         page.update()
         scroll_memory.prune(page)
         scroll_memory.schedule_restore(page)
@@ -395,20 +500,12 @@ def main(page: ft.Page) -> None:
     page.on_route_change = route_change
     page.on_view_pop = view_pop
 
-    route_change()
-
-    previous_resize = page.on_resize
     resize_state = {
         "compact": is_compact_layout(page),
         "token": 0,
     }
 
     def on_resize(event=None) -> None:
-        if (
-            previous_resize is not None
-            and previous_resize is not on_resize
-        ):
-            previous_resize(event)
         current = is_compact_layout(page)
         if current == resize_state["compact"]:
             return
@@ -426,7 +523,16 @@ def main(page: ft.Page) -> None:
             return
         if str(getattr(page.views[-1], "route", "") or "") != top_route:
             return
+        # 布局真正更新前再清一次，覆盖松手后才出现的 tooltip。
+        from bangumi.ui.interaction import hide_all_labels
+
+        try:
+            hide_all_labels(page)
+        except Exception:
+            pass
         data = getattr(top, "data", None)
+        if isinstance(data, dict) and data.get("no_compact_rebuild"):
+            return
         if isinstance(data, dict) and callable(data.get("rebuild")):
             try:
                 new_view = data["rebuild"]()
@@ -446,5 +552,101 @@ def main(page: ft.Page) -> None:
             page.update()
         except RuntimeError:
             return
+        try:
+            hide_all_labels(page)
+        except Exception:
+            pass
 
-    page.on_resize = on_resize
+    # 全局 compact 逻辑作为 base；轻量记录最新尺寸供页面布局使用。
+    page._resize_base = on_resize
+    last_size = {
+        "w": float(page.width or 0),
+        "h": float(page.height or 0),
+    }
+
+    def _record_size(event) -> None:
+        w = getattr(event, "width", None)
+        h = getattr(event, "height", None)
+        if isinstance(w, (int, float)):
+            last_size["w"] = float(w)
+        if isinstance(h, (int, float)):
+            last_size["h"] = float(h)
+        # 尝试同步回 page；不允许赋值时仍以记录值为准。
+        try:
+            if isinstance(w, (int, float)):
+                page.width = float(w)
+            if isinstance(h, (int, float)):
+                page.height = float(h)
+        except Exception:
+            pass
+
+    page.on_resize = _record_size
+    page._resize_last_size = last_size
+
+    async def poll_resize() -> None:
+        """轮询窗口尺寸；停手 120ms 后按栈顶分发一次。"""
+        def latest_size() -> tuple[float, float]:
+            size = getattr(page, "_resize_last_size", None)
+            if isinstance(size, dict) and size.get("w"):
+                return (
+                    float(size["w"]),
+                    float(size.get("h") or 0),
+                )
+            return (
+                float(page.width or 0),
+                float(page.height or 0),
+            )
+
+        last = latest_size()
+        pending = last
+        changed_at = 0.0
+        applied = last
+        silent_until = 0.0
+        while True:
+            await asyncio.sleep(0.1)
+            now = asyncio.get_running_loop().time()
+            current = latest_size()
+            if now < silent_until:
+                # 分发后的静默期：只记录尺寸，避免重建反馈被当成缩放。
+                last = current
+                pending = current
+                continue
+            if silent_until:
+                # 静默结束：对齐到当前尺寸。
+                silent_until = 0.0
+                last = current
+                pending = current
+                applied = current
+                continue
+            if current != last:
+                # 只有真的不同才判断容差，避免吞掉待分发尺寸。
+                if (
+                    abs(current[0] - last[0]) < 2
+                    and abs(current[1] - last[1]) < 2
+                ):
+                    last = current
+                    continue
+                last = current
+                pending = current
+                changed_at = now
+                continue
+            if pending != applied and now - changed_at >= 0.12:
+                applied = pending
+                from bangumi.views.navigation.stack import (
+                    dispatch_resize,
+                )
+
+                try:
+                    dispatch_resize(page, None)
+                except Exception:
+                    # 单个 handler 出错不应中断轮询。
+                    pass
+                # 分发后进入 0.35s 静默期。
+                silent_until = now + 0.35
+
+    try:
+        page.run_task(poll_resize)
+    except RuntimeError:
+        pass
+
+    route_change()

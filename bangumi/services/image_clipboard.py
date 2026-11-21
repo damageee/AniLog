@@ -7,7 +7,6 @@ import ctypes.wintypes
 import os
 import time
 from io import BytesIO
-from pathlib import Path
 
 from PIL import Image
 
@@ -51,14 +50,6 @@ def copy_image_bytes(data: bytes) -> bool:
             rgb.save(buffer, format="BMP")
         dib = buffer.getvalue()[14:]
         return _set_clipboard_dib(dib)
-    except Exception:
-        return False
-
-
-def copy_image_file(path: Path) -> bool:
-    """将 ``path`` 处的图片放入剪贴板；失败返回 False。"""
-    try:
-        return copy_image_bytes(Path(path).read_bytes())
     except Exception:
         return False
 

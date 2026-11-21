@@ -13,9 +13,12 @@ from bangumi.ui.theme import (
     ui_text_style,
 )
 from bangumi.views.navigation.catalog import SECTION_PAGES
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.ui.colors import (
     foreground_color,
 )
+from bangumi.ui.feedback import confirmation_dialog
+from bangumi.ui.interaction import hover_icon
 from bangumi.ui.layout import (
     horizontal_strip,
 )
@@ -55,20 +58,22 @@ def home_view(page: ft.Page) -> ft.View:
     )
     holder["view"] = view
 
-    previous_resize = page.on_resize
-
     def on_resize(event: ft.ControlEvent | None = None) -> None:
+        # 仅栈顶响应
         current = holder.get("view")
-        if current is not None and current in page.views:
-            current.controls = build_controls()
-            try:
-                page.update()
-            except RuntimeError:
-                return
-        if previous_resize is not None and previous_resize is not on_resize:
-            previous_resize(event)
+        if (
+            not page.views
+            or current is None
+            or page.views[-1] is not current
+        ):
+            return
+        current.controls = build_controls()
+        try:
+            page.update()
+        except RuntimeError:
+            return
 
-    page.on_resize = on_resize
+    register_resize_handler(page, "/", on_resize)
     return view
 
 
@@ -82,13 +87,64 @@ def _home_controls(page: ft.Page) -> list[ft.Control]:
         )
         for name, route in SECTIONS
     ]
+    # 在【追季】与【收藏】之间插入一整行【随机】按钮。
+    try:
+        random_index = [route for _, route in SECTIONS].index("/season") + 1
+    except ValueError:
+        random_index = len(buttons)
+    buttons.insert(
+        min(random_index, len(buttons)),
+        _navigation_button(
+            page,
+            label="随机",
+            route="/random",
+            size=18,
+        ),
+    )
+
+    def open_star(event: ft.ControlEvent) -> None:
+        """确认后打开项目 GitHub 页面。"""
+        def confirm(inner: ft.ControlEvent) -> None:
+            page.pop_dialog()
+            launcher = None
+            for service in page.services:
+                if isinstance(service, ft.UrlLauncher):
+                    launcher = service
+                    break
+            if launcher is None:
+                launcher = ft.UrlLauncher()
+                page.services.append(launcher)
+            page.run_task(
+                launcher.launch_url,
+                "https://github.com/damageee/AniLog",
+            )
+
+        page.show_dialog(
+            confirmation_dialog(
+                page,
+                title="给作者点一个Star吧！",
+                message=(
+                    "将在浏览器打开此项目的 Github 链接，"
+                    "你可以在此获取最新更新，是否继续？"
+                ),
+                confirm_label="继续",
+                on_confirm=confirm,
+            )
+        )
+
+    star_icon = hover_icon(
+        page,
+        ft.Icons.BEACH_ACCESS,
+        size=TITLE_SIZE,
+        color="#2EA7E0",
+        on_click=open_star,
+        tooltip="给作者点一个 Star",
+        padding=2,
+    )
+
     title = horizontal_strip(
         [
-            ft.Icon(
-                icon=ft.Icons.BEACH_ACCESS,
-                size=TITLE_SIZE,
-                color="#2EA7E0",
-            ),
+            star_icon,
             _home_title(page),
         ],
         spacing=9,
@@ -102,6 +158,7 @@ def _home_controls(page: ft.Page) -> list[ft.Control]:
     )
 
     button_block = (
+        # len(buttons) 已包含单独成行的【随机】按钮。
         len(buttons) * HOME_BUTTON_HEIGHT
         + max(0, len(buttons) - 1) * HOME_SPACING
     )
@@ -173,6 +230,12 @@ def _home_title(page: ft.Page) -> ft.Text:
 
 
 def _go(page: ft.Page, route: str) -> None:
+    if route == "/random":
+        # /random 未注册在 ROUTES 中，直接入栈随机页与设置页。
+        from bangumi.views.random import open_random
+
+        open_random(page)
+        return
     from bangumi.views.navigation.stack import request_push_route
 
     request_push_route(page, route)

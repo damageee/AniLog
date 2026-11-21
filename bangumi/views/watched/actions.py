@@ -209,14 +209,39 @@ class ActionsMixin:
 
     def _delete_table(self, event: ft.ControlEvent) -> None:
         self.page.pop_dialog()
-        table_file().unlink(missing_ok=True)
+        try:
+            table_file().unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            from bangumi.data import prework
+
+            prework.refresh_from_disk()
+        except Exception:
+            pass
         self.records.clear()
-        sync_tag_colors(self.records, self.preferences)
+        try:
+            sync_tag_colors(self.records, self.preferences)
+        except Exception:
+            pass
         self.table_exists = False
         self.current_page = 0
         self.state.current_page = 0
         self.state.horizontal_offset = 0.0
         self.state.vertical_offset = 0.0
-        self._clear_search()
-        self.refresh(reset_scroll=True, update_header=True)
+        try:
+            self._clear_search()
+        except Exception:
+            pass
+        try:
+            # 只刷新本页，不操作视图栈/路由。
+            self.refresh(reset_scroll=True, update_header=True)
+        except Exception:
+            # 兜底：即使重建失败也显示空状态。
+            try:
+                self.body.controls = [self._empty_card()]
+                self.page.update()
+            except Exception:
+                pass
+        show_toast(self.page, "表格已删除")
 

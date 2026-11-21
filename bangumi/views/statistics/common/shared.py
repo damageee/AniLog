@@ -150,6 +150,13 @@ def _accent(page: ft.Page, light: str, dark: str) -> str:
     return dark if is_dark(page) else light
 
 
+def range_label(start: int, end: int) -> str:
+    """把半开区间 [start, end) 的评分段格式化为闭区间文本。"""
+    if end >= 100:
+        return f"{start}~100"
+    return f"{start}~{end - 1}"
+
+
 def _type_chip(
     page: ft.Page,
     *,

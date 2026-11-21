@@ -12,7 +12,6 @@ from bangumi.ui.layout import (
     page_padding,
     vertical_page,
 )
-from bangumi.views.navigation import ROLE, open_detail
 from bangumi.views.widgets.links import RoleLine
 from bangumi.data.role_core import (
     first_role_name,
@@ -73,7 +72,8 @@ def build_role_view(
         padding=page_padding(),
         controls=[
             vertical_page(
-                [ft.Column(spacing=4, controls=items)]
+                [ft.Column(spacing=4, controls=items)],
+                stretch=True,
             )
         ],
     )
@@ -85,12 +85,3 @@ def build_role_view(
     return view
 
 
-def open_role_page(
-    page: ft.Page,
-    records: list[Record],
-    record: Record,
-    *,
-    value: str | None = None,
-) -> None:
-    """打开某条记录的角色列表页。"""
-    open_detail(page, records, record, ROLE, value=value)

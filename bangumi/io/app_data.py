@@ -20,10 +20,10 @@ import flet as ft
 from bangumi.data.preferences import Preferences
 from bangumi.core.storage import storage_directory
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 FORMAT_NAME = "anilog-config"
 DISCOVERY_PORT = 47823
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 PAIR_TTL_SECONDS = 300
 SCAN_TIMEOUT = 2.0
 NETWORK_TIMEOUT = 10.0
@@ -40,6 +40,7 @@ IMPORT_TYPE_CHECKS: dict[str, type] = {
     "watchlist_preferences.json": dict,
     "season.json": dict,
     "bilibili_import.json": dict,
+    "favorites.json": dict,
 }
 
 
@@ -247,6 +248,22 @@ def apply_import_files(
                 except OSError:
                     pass
 
+    if "watched.json" in files:
+        try:
+            from bangumi.data import prework
+
+            prework.refresh_from_disk()
+        except Exception:
+            pass
+
+    # 导入包可能含旧 bilibili_import.json，写盘后并入 preferences。
+    try:
+        from bangumi.data.preferences import Preferences
+
+        Preferences.migrate_legacy_bilibili_uid()
+    except Exception:
+        pass
+
 
 def apply_cover_files(covers: dict[str, str]) -> None:
     if not covers:
@@ -334,6 +351,72 @@ def local_ip_addresses() -> list[str]:
 def _send_json_line(sock: socket.socket, payload: object) -> None:
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     sock.sendall(data + b"\n")
+
+
+class _LineReader:
+    """按行读取 JSON，保留一次 recv 中后续未消费的数据。"""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self.sock = sock
+        self.buffer = b""
+
+    def read(self) -> bytes | None:
+        while b"\n" not in self.buffer:
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                line, self.buffer = self.buffer, b""
+                return line or None
+            self.buffer += chunk
+            if len(self.buffer) > MAX_MESSAGE_BYTES:
+                raise SyncError("invalid", "数据过大")
+        line, self.buffer = self.buffer.split(b"\n", 1)
+        return line
+
+    def read_json(self):
+        raw = self.read()
+        if raw is None:
+            return None
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as error:
+            raise SyncError(
+                "invalid", "返回数据不是合法 JSON"
+            ) from error
+
+
+def _validate_file_name(name: object) -> str:
+    if not isinstance(name, str):
+        raise ValueError("文件名必须是字符串")
+    if (
+        not name.endswith(".json")
+        or name in (".", "..")
+        or ".." in name
+        or "/" in name
+        or "\\" in name
+        or Path(name).name != name
+    ):
+        raise ValueError(f"不安全的文件名：{name}")
+    return name
+
+
+def validate_file_item(name: object, value: object) -> tuple[str, object]:
+    """逐项校验存储文件；规则与整包导入一致。"""
+    safe = _validate_file_name(name)
+    expected = IMPORT_TYPE_CHECKS.get(safe)
+    if expected is not None and not isinstance(value, expected):
+        raise ValueError(
+            f"{safe} 的内容类型应为 {expected.__name__}"
+        )
+    return safe, value
+
+
+def validate_cover_item(name: object, value: object) -> tuple[str, str]:
+    """逐项校验封面文件名与 base64 内容。"""
+    if not isinstance(name, str) or not _COVER_NAME_RE.fullmatch(name):
+        raise ValueError(f"不安全的封面文件名：{name}")
+    if not isinstance(value, str):
+        raise ValueError("封面图内容必须是 base64 字符串")
+    return name, value
 
 
 def _recv_json_line(sock: socket.socket) -> object:
@@ -427,8 +510,13 @@ def pull_document(
     timeout: float = NETWORK_TIMEOUT,
     *,
     include_covers: bool = False,
-) -> dict[str, object]:
-    """向设备请求共享文档。"""
+    progress: Callable[[int, int, str], None] | None = None,
+    abort_event: threading.Event | None = None,
+) -> tuple[dict[str, object], bool]:
+    """流式拉取清单与逐项数据，返回 (文档, 是否中止)。"""
+    aborted = False
+    files: dict[str, object] = {}
+    covers: dict[str, str] = {}
     try:
         with socket.create_connection(
             (host, port), timeout=timeout
@@ -443,7 +531,77 @@ def pull_document(
                     "covers": bool(include_covers),
                 },
             )
-            response = _recv_json_line(connection)
+            reader = _LineReader(connection)
+            response = reader.read_json()
+            if not isinstance(response, dict):
+                raise SyncError("invalid", "对端返回的数据无效")
+            if response.get("ok") is not True:
+                reason = str(response.get("error") or "invalid")
+                if reason == "pair":
+                    raise SyncError("pair", "配对码错误")
+                if reason == "expired":
+                    raise SyncError("pair", "配对码已过期")
+                if reason == "version":
+                    raise SyncError("version", "版本不匹配")
+                raise SyncError("invalid", "对端拒绝了拉取请求")
+            manifest = response.get("manifest")
+            if not isinstance(manifest, dict):
+                raise SyncError("invalid", "对端清单无效")
+            if manifest.get("version") != APP_VERSION:
+                raise SyncError("version", "版本不匹配")
+            if manifest.get("format") != FORMAT_NAME:
+                raise SyncError("invalid", "对端清单格式无效")
+            items = manifest.get("items")
+            if not isinstance(items, list):
+                raise SyncError("invalid", "对端清单无效")
+            total = len(items)
+            received = 0
+            while True:
+                if abort_event is not None and abort_event.is_set():
+                    try:
+                        _send_json_line(
+                            connection, {"action": "abort"}
+                        )
+                    except OSError:
+                        pass
+                    aborted = True
+                    break
+                item = reader.read_json()
+                if item is None:
+                    aborted = True
+                    break
+                if not isinstance(item, dict):
+                    raise SyncError("invalid", "对端数据项无效")
+                kind = item.get("type")
+                if kind == "done":
+                    break
+                if kind == "aborted":
+                    aborted = True
+                    break
+                if kind != "item":
+                    raise SyncError("invalid", "对端数据项无效")
+                item_kind = item.get("kind")
+                name = item.get("name")
+                value = item.get("data")
+                try:
+                    if item_kind == "file":
+                        safe, data = validate_file_item(name, value)
+                        files[safe] = data
+                    elif item_kind == "cover":
+                        safe, data = validate_cover_item(name, value)
+                        covers[safe] = data
+                    else:
+                        raise ValueError("未知的数据项类型")
+                except ValueError as error:
+                    raise SyncError(
+                        "invalid", str(error)
+                    ) from error
+                received += 1
+                if progress is not None:
+                    try:
+                        progress(received, total, str(safe))
+                    except Exception:
+                        pass
     except socket.timeout as error:
         raise SyncError("timeout", "连接超时") from error
     except OSError as error:
@@ -451,26 +609,14 @@ def pull_document(
             "connection", f"连接失败：{error}"
         ) from error
 
-    if not isinstance(response, dict):
-        raise SyncError("invalid", "对端返回的数据无效")
-    if response.get("ok") is not True:
-        reason = str(response.get("error") or "invalid")
-        if reason == "pair":
-            raise SyncError("pair", "配对码错误")
-        if reason == "expired":
-            raise SyncError("pair", "配对码已过期")
-        if reason == "version":
-            raise SyncError("version", "版本不匹配")
-        raise SyncError("invalid", "对端拒绝了拉取请求")
-
-    document = response.get("document")
-    try:
-        validate_export_document(document)
-    except ValueError as error:
-        message = str(error)
-        code = "version" if "版本" in message else "invalid"
-        raise SyncError(code, message) from error
-    return document
+    document = {
+        "format": FORMAT_NAME,
+        "version": APP_VERSION,
+        "exported_at": str(manifest.get("exported_at") or ""),
+        "files": files,
+        "covers": covers,
+    }
+    return document, aborted
 
 
 class ShareServer:
@@ -488,6 +634,8 @@ class ShareServer:
         self.deadline = time.monotonic() + PAIR_TTL_SECONDS
         self.served = threading.Event()
         self._stop = threading.Event()
+        self.abort_event = threading.Event()
+        self.on_progress: Callable[[int, int, str], None] | None = None
         self.tcp_socket: socket.socket | None = None
         self.udp_socket: socket.socket | None = None
         self.port: int | None = None
@@ -498,6 +646,10 @@ class ShareServer:
 
     def is_expired(self) -> bool:
         return time.monotonic() > self.deadline
+
+    def abort(self) -> None:
+        """请求中止当前传输。"""
+        self.abort_event.set()
 
     def start(self) -> None:
         tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -529,6 +681,7 @@ class ShareServer:
             thread.start()
 
     def stop(self) -> None:
+        self.abort_event.set()
         self._stop.set()
         for sock in (self.tcp_socket, self.udp_socket):
             if sock is not None:
@@ -608,7 +761,7 @@ class ShareServer:
 
     def _handle(self, connection: socket.socket) -> None:
         try:
-            request = _recv_json_line(connection)
+            request = _LineReader(connection).read_json()
         except (SyncError, OSError):
             self._reply(connection, {"ok": False, "error": "invalid"})
             return
@@ -626,16 +779,80 @@ class ShareServer:
             self._reply(connection, {"ok": False, "error": "pair"})
             return
         try:
-            document = self.document_provider()
-            include_covers = request.get("covers") is True
-            if include_covers:
-                covers = collect_cover_files()
-                if covers:
-                    document = {**document, "covers": covers}
+            files = collect_storage_files()
+            covers = (
+                collect_cover_files()
+                if request.get("covers") is True
+                else {}
+            )
         except Exception:
             self._reply(connection, {"ok": False, "error": "invalid"})
             return
-        self._reply(connection, {"ok": True, "document": document})
+        items: list[tuple[str, str, object]] = []
+        items.extend(
+            ("file", name, value)
+            for name, value in files.items()
+        )
+        items.extend(
+            ("cover", name, value)
+            for name, value in covers.items()
+        )
+        exported_at = dt.datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        manifest = {
+            "version": APP_VERSION,
+            "format": FORMAT_NAME,
+            "exported_at": exported_at,
+            "items": [
+                {"kind": kind, "name": name}
+                for kind, name, _value in items
+            ],
+        }
+        try:
+            _send_json_line(
+                connection,
+                {"ok": True, "manifest": manifest},
+            )
+        except OSError:
+            self._finish_serving()
+            return
+        total = len(items)
+        for index, (kind, name, value) in enumerate(items, 1):
+            if self.abort_event.is_set():
+                try:
+                    _send_json_line(
+                        connection, {"type": "aborted"}
+                    )
+                except OSError:
+                    pass
+                break
+            try:
+                _send_json_line(
+                    connection,
+                    {
+                        "type": "item",
+                        "kind": kind,
+                        "name": name,
+                        "data": value,
+                    },
+                )
+            except OSError:
+                # 对端中止，直接结束。
+                break
+            if self.on_progress is not None:
+                try:
+                    self.on_progress(index, total, name)
+                except Exception:
+                    pass
+        else:
+            try:
+                _send_json_line(connection, {"type": "done"})
+            except OSError:
+                pass
+        self._finish_serving()
+
+    def _finish_serving(self) -> None:
         self.served.set()
         self._stop.set()
         for sock in (self.tcp_socket, self.udp_socket):

@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import (
     date,
 )
+from pathlib import Path
+
 import flet as ft
+from bangumi.core.storage import storage_directory
 from bangumi.data.preferences import (
     Preferences,
+)
+from bangumi.data.watched_data import load_records, record_title
+from bangumi.services.bgm_pic import (
+    COVER_DIRECTORY,
+    has_cover,
+    save_subject_image,
 )
 from bangumi.ui.theme import (
     ui_text,
@@ -18,6 +29,7 @@ from bangumi.ui.interaction import (
     hover_icon,
 )
 from bangumi.ui.colors import (
+    background_color,
     foreground_color,
 )
 from bangumi.views.navigation import (
@@ -29,9 +41,12 @@ from bangumi.ui.layout import (
     vertical_page,
 )
 from bangumi.ui.feedback import (
+    close_dialog,
+    confirmation_dialog,
     show_error_dialog,
 )
 from bangumi.ui import anim
+from bangumi.views.widgets.toast import show_toast
 
 
 FIXED_COLUMN_LABELS = (
@@ -39,12 +54,278 @@ FIXED_COLUMN_LABELS = (
     ("specification", "规格"),
     ("category", "类型"),
     ("tag", "TAG"),
-    ("author", "作者"),
+    ("staff", "STAFF"),
     ("studio", "制作公司"),
     ("broadcast", "放送"),
     ("role", "角色"),
     ("rating", "评分"),
 )
+
+
+def _unused_cover_files() -> list[Path]:
+    """返回 bgm_cover 目录里 bgm_id 不在已阅记录中的图片。"""
+    records = load_records()
+    used: set[int] = set()
+    for record in records:
+        bgm_id = record.get("bgm_id")
+        if isinstance(bgm_id, int) and bgm_id != -1:
+            used.add(bgm_id)
+    root = storage_directory() / COVER_DIRECTORY
+    if not root.is_dir():
+        return []
+    unused: list[Path] = []
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in (".jpg", ".jpeg", ".png", ".webp"):
+            continue
+        if not path.stem.isdigit():
+            continue
+        if int(path.stem) not in used:
+            unused.append(path)
+    return unused
+
+
+def open_clean_covers_dialog(page: ft.Page) -> None:
+    """确认后清理没有对应已阅记录的封面图。"""
+    files = _unused_cover_files()
+    if not files:
+        page.show_dialog(
+            ft.AlertDialog(
+                modal=True,
+                bgcolor=background_color(page),
+                title=ui_text("清理多余封面图"),
+                content=ui_text("无可清理图片"),
+                title_text_style=ui_text_style(
+                    color=foreground_color(page)
+                ),
+                content_text_style=ui_text_style(
+                    color=foreground_color(page)
+                ),
+                actions=[
+                    ft.Button(
+                        content=ui_text("确认"),
+                        on_click=lambda event: page.pop_dialog(),
+                    )
+                ],
+            )
+        )
+        return
+
+    def confirm(event: ft.ControlEvent) -> None:
+        page.pop_dialog()
+        removed = 0
+        for path in files:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                continue
+        show_toast(page, f"已清理 {removed} 张图片")
+
+    page.show_dialog(
+        confirmation_dialog(
+            page,
+            title="清理多余封面图",
+            message=f"是否清理共{len(files)}张无用图片？",
+            confirm_label="清理",
+            on_confirm=confirm,
+        )
+    )
+
+
+def _missing_covers_info() -> tuple[
+    int,
+    int,
+    int,
+    int,
+    list[tuple[int, str]],
+]:
+    """统计缺失 bgm_id 与缺失封面，并按 bgm_id 去重待下载列表。"""
+    records = load_records()
+    total = len(records)
+    no_id = 0
+    missing = 0
+    pending: dict[int, str] = {}
+    for record in records:
+        bgm_id = record.get("bgm_id")
+        if not isinstance(bgm_id, int) or bgm_id == -1:
+            no_id += 1
+            continue
+        if has_cover(bgm_id):
+            continue
+        missing += 1
+        name = record_title(record) or str(bgm_id)
+        pending.setdefault(bgm_id, name)
+    remaining = total - no_id
+    return total, no_id, remaining, missing, list(pending.items())
+
+
+def _run_missing_cover_download(
+    page: ft.Page,
+    pending: list[tuple[int, str]],
+) -> None:
+    """显示进度弹窗并逐一补齐缺失封面。"""
+    total = len(pending)
+    text_color = foreground_color(page)
+    status_text = ui_text("准备中…", size=13)
+    counter_text = ui_text(f"0/{total}", size=13)
+    progress = ft.ProgressBar(value=0, height=12)
+    fail_label = ui_text("0 失败", size=13)
+    elapsed_label = ui_text("0s", size=13)
+    state: dict[str, object] = {
+        "ok": 0,
+        "fail": 0,
+        "done": 0,
+        "abort": False,
+        "start": time.monotonic(),
+    }
+
+    dialog = ft.AlertDialog(
+        modal=True,
+        bgcolor=background_color(page),
+        title=ui_text("正在补全"),
+        content=ft.Column(
+            tight=True,
+            spacing=10,
+            controls=[
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[status_text, counter_text],
+                ),
+                progress,
+                fail_label,
+                elapsed_label,
+            ],
+        ),
+        actions=[],
+    )
+
+    def show_result() -> None:
+        close_dialog(dialog)
+        ok = int(state["ok"])
+        fail = int(state["fail"])
+        result = ft.AlertDialog(
+            modal=True,
+            bgcolor=background_color(page),
+            title=ui_text("补全完成"),
+            content=ui_text(
+                f"成功下载 {ok} 个封面，失败 {fail} 个。"
+            ),
+            title_text_style=ui_text_style(color=text_color),
+            content_text_style=ui_text_style(color=text_color),
+            actions=[],
+        )
+        result.actions = [
+            ft.Button(
+                content=ui_text("确认"),
+                on_click=lambda event: close_dialog(result),
+            )
+        ]
+        page.show_dialog(result)
+
+    def abort(event: ft.ControlEvent) -> None:
+        # 只设置标志，当前下载结束后停止并进入结果弹窗。
+        state["abort"] = True
+
+    dialog.actions = [
+        ft.Button(content=ui_text("中止"), on_click=abort)
+    ]
+    page.show_dialog(dialog)
+
+    async def worker() -> None:
+        try:
+            for index, (bgm_id, name) in enumerate(
+                pending,
+                start=1,
+            ):
+                if state["abort"]:
+                    break
+                status_text.value = f"正在下载{name}"
+                counter_text.value = f"{index - 1}/{total}"
+                try:
+                    dialog.update()
+                except Exception:
+                    pass
+                result = await asyncio.to_thread(
+                    save_subject_image,
+                    bgm_id,
+                )
+                if result is not None:
+                    state["ok"] = int(state["ok"]) + 1
+                else:
+                    state["fail"] = int(state["fail"]) + 1
+                state["done"] = index
+                progress.value = index / total if total else 0
+                counter_text.value = f"{index}/{total}"
+                fail_label.value = f"{state['fail']} 失败"
+                elapsed_label.value = (
+                    f"{int(round(time.monotonic() - float(state['start'])))}s"
+                )
+                try:
+                    dialog.update()
+                except Exception:
+                    pass
+        finally:
+            show_result()
+
+    page.run_task(worker)
+
+
+def open_missing_covers_dialog(page: ft.Page) -> None:
+    """检查缺失封面并询问是否补齐。"""
+    total, no_id, remaining, missing, pending = (
+        _missing_covers_info()
+    )
+    text_color = foreground_color(page)
+    dialog = ft.AlertDialog(
+        modal=True,
+        bgcolor=background_color(page),
+        title=ui_text("检查缺失封面图"),
+        content=ft.Column(
+            tight=True,
+            spacing=4,
+            controls=[
+                ui_text(
+                    f"共{total}部动画，{no_id}部缺失bgm_id",
+                    color=text_color,
+                ),
+                ui_text(
+                    (
+                        f"剩下的{remaining}部中都有封面，"
+                        f"没有缺失。"
+                    )
+                    if missing == 0
+                    else (
+                        f"剩下的{remaining}部中有{missing}部"
+                        f"缺失封面，是否补齐？"
+                    ),
+                    color=text_color,
+                ),
+            ],
+        ),
+        title_text_style=ui_text_style(color=text_color),
+        content_text_style=ui_text_style(color=text_color),
+        actions=[],
+    )
+
+    def close(event: ft.ControlEvent) -> None:
+        page.pop_dialog()
+
+    def start(event: ft.ControlEvent) -> None:
+        page.pop_dialog()
+        _run_missing_cover_download(page, pending)
+
+    if missing == 0:
+        dialog.actions = [
+            ft.Button(content=ui_text("确认"), on_click=close)
+        ]
+    else:
+        dialog.actions = [
+            ft.Button(content=ui_text("取消"), on_click=close),
+            ft.Button(content=ui_text("补齐"), on_click=start),
+        ]
+    page.show_dialog(dialog)
 
 
 def _build_advanced_view(page: ft.Page) -> ft.View:
@@ -127,6 +408,28 @@ def _build_advanced_view(page: ft.Page) -> ft.View:
                                 ),
                             ),
                             mode_button,
+                            ft.Button(
+                                content=ui_text(
+                                    "清理多余封面图", size=18
+                                ),
+                                style=ft.ButtonStyle(
+                                    text_style=ui_text_style(size=18)
+                                ),
+                                on_click=lambda event: (
+                                    open_clean_covers_dialog(page)
+                                ),
+                            ),
+                            ft.Button(
+                                content=ui_text(
+                                    "检查缺失封面图", size=18
+                                ),
+                                style=ft.ButtonStyle(
+                                    text_style=ui_text_style(size=18)
+                                ),
+                                on_click=lambda event: (
+                                    open_missing_covers_dialog(page)
+                                ),
+                            ),
                         ],
                     )
                 ]
@@ -365,8 +668,9 @@ def open_fixed_columns_dialog(page: ft.Page) -> None:
             scroll=ft.ScrollMode.AUTO,
             controls=[
                 ui_text(
-                    "以下勾选的字段名，所对应的列在编辑（不含追加）条目、"
-                    "填充表格时发生的从Bangumi自动导入中将被忽略。",
+                    "以下勾选的字段名，所对应的列在追加/编辑条目、"
+                    "填充表格时发生的从 Bangumi 自动导入中一律忽略"
+                    "（不论原字段是否为空）。",
                     size=13,
                 ),
                 clear_checkbox,

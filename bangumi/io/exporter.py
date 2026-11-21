@@ -9,7 +9,12 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from bangumi.data.watched_data import Record, entry_group_key, split_tags
+from bangumi.data.watched_data import (
+    Record,
+    entry_group_key,
+    split_tags,
+    staff_lines,
+)
 
 SHEET_NAME = "bangumi"
 FONT_NAME = "宋体"
@@ -76,6 +81,8 @@ def _cell_text(record: Record, key: str) -> str:
         return str(value)
     if key == "tag":
         return ", ".join(split_tags(str(record.get("tag", "") or "")))
+    if key == "staff":
+        return staff_lines(record)
     if key == "role":
         return "\n".join(_role_lines(record))
     value = record.get(key, "")
@@ -157,6 +164,8 @@ def build_workbook_bytes(
             cell.border = BORDER
             if keys[index - 1] == "entry":
                 cell.alignment = ENTRY_ALIGNMENT
+            elif keys[index - 1] == "staff":
+                cell.alignment = ROLE_ALIGNMENT
             elif keys[index - 1] == "role":
                 cell.alignment = ROLE_ALIGNMENT
             elif keys[index - 1] == "remark":

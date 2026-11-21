@@ -14,6 +14,7 @@ from bangumi.ui.theme import (
 from bangumi.ui.interaction import FloatingLabel
 from bangumi.ui.platform import is_mobile
 from bangumi.ui.colors import (
+    background_color,
     foreground_color,
     link_hover_color,
 )
@@ -30,11 +31,14 @@ from bangumi.ui.anim import (
     wait_until_ready,
 )
 from bangumi.ui.page_state import first_entry, mark_seen
+from bangumi.ui.view_state import state_for
 from bangumi.data.watched_data import (
     Record,
     load_records,
 )
 from bangumi.data.statistics.tags import (
+    DEFAULT_TAG_SORT,
+    TAG_SORT_OPTIONS,
     filtered_anime_items,
     tag_statistics,
 )
@@ -43,6 +47,7 @@ from bangumi.views.statistics.common.overlays import (
     _OverlayLayers,
     _hide_page_overlay,
     _install_overlay_hook,
+    _attach_overlay_cleanup,
     _register_overlay,
 )
 from bangumi.views.statistics.common.shared import (
@@ -53,6 +58,7 @@ from bangumi.views.statistics.common.shared import (
     TAG_ROW_SPACING,
     _accent,
 )
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.ui.constants import (
     HOVER_ROW_OPACITY,
 )
@@ -127,6 +133,8 @@ def tags_view(page: ft.Page) -> ft.View:
     if play_animation:
         mark_seen(page, "/statistics/tags")
     prev_selected: list[str] = []
+    prev_state: dict | None = None
+    prev_sort = ""
     if page.views:
         top = page.views[-1]
         if (
@@ -136,6 +144,14 @@ def tags_view(page: ft.Page) -> ft.View:
             prev_selected = list(
                 top.data.get("tag_filters") or []
             )
+            # 重建场景：沿用同一个 View 实例的状态。
+            prev_state = state_for(top)
+            prev_sort = str(prev_state.get("tag_sort") or "")
+            if not prev_sort:
+                prev_sort = str(top.data.get("tag_sort") or "")
+    valid_sorts = {mode for mode, _ in TAG_SORT_OPTIONS}
+    if prev_sort not in valid_sorts:
+        prev_sort = DEFAULT_TAG_SORT
     records = load_records()
     counts = tag_statistics(records)
     total = len(records) or 1
@@ -160,6 +176,8 @@ def tags_view(page: ft.Page) -> ft.View:
                 )
             ],
         )
+        state = prev_state if prev_state is not None else state_for(view)
+        state["tag_sort"] = prev_sort
         view.data = {
             "rebuild": lambda: tags_view(page)
         }
@@ -170,9 +188,43 @@ def tags_view(page: ft.Page) -> ft.View:
     _install_overlay_hook(page)
 
     selected: list[str] = list(prev_selected)
+    sort_mode = {"value": prev_sort}
+    sort_state = prev_state if prev_state is not None else {}
+    sort_labels = dict(TAG_SORT_OPTIONS)
     bar_specs: list[tuple[ft.Container, float, float]] = []
     anim_state = {"run": True}
     content_width = {"value": _tags_target_width(page)}
+
+    sort_text = ui_text(
+        sort_labels[prev_sort],
+        size=12,
+        color=fg,
+    )
+    sort_button = ft.PopupMenuButton(
+        content=ft.Container(
+            padding=ft.Padding.symmetric(
+                horizontal=10,
+                vertical=4,
+            ),
+            border_radius=12,
+            bgcolor=background_color(page),
+            border=ft.Border.all(
+                1,
+                ft.Colors.with_opacity(0.18, fg),
+            ),
+            content=sort_text,
+            tooltip="排序方式",
+        ),
+        items=[
+            ft.PopupMenuItem(
+                content=ui_text(label, size=12),
+                on_click=(
+                    lambda event, m=mode: select_sort(m)
+                ),
+            )
+            for mode, label in TAG_SORT_OPTIONS
+        ],
+    )
 
     chart_holder = ft.Column(
         spacing=0,
@@ -282,8 +334,16 @@ def tags_view(page: ft.Page) -> ft.View:
         return row
 
     def refresh_filters() -> None:
-        chips_row.controls = [chip_control(tag) for tag in selected]
-        items = filtered_anime_items(records, selected)
+        tags = [chip_control(tag) for tag in selected]
+        chips_row.controls = (
+            [sort_button, *tags] if selected else []
+        )
+        chips_row.visible = bool(selected)
+        items = filtered_anime_items(
+            records,
+            selected,
+            sort_mode=sort_mode["value"],
+        )
         names_holder.controls = [
             name_row(name, record) for name, record in items
         ]
@@ -292,11 +352,26 @@ def tags_view(page: ft.Page) -> ft.View:
         except Exception:
             pass
 
-    def add_tag(tag: str) -> None:
+    def toggle_tag(tag: str) -> None:
         value = str(tag or "").strip()
-        if not value or value in selected:
+        if not value:
             return
-        selected.append(value)
+        if value in selected:
+            selected.remove(value)
+        else:
+            selected.append(value)
+        refresh_filters()
+
+    def select_sort(mode: str) -> None:
+        if mode not in valid_sorts:
+            return
+        sort_mode["value"] = mode
+        sort_state["tag_sort"] = mode
+        sort_text.value = sort_labels[mode]
+        try:
+            sort_text.update()
+        except Exception:
+            pass
         refresh_filters()
 
     def remove_tag(tag: str) -> None:
@@ -400,7 +475,7 @@ def tags_view(page: ft.Page) -> ft.View:
             label = ft.Container(
                 width=label_width,
                 alignment=ft.Alignment.CENTER_RIGHT,
-                on_click=lambda event, value=tag: add_tag(value),
+                on_click=lambda event, value=tag: toggle_tag(value),
                 tooltip=(
                     None
                     if is_mobile(page)
@@ -507,9 +582,13 @@ def tags_view(page: ft.Page) -> ft.View:
         padding=page_padding(),
         controls=[page_col],
     )
+    if prev_state is None:
+        sort_state = state_for(view)
+    sort_state["tag_sort"] = sort_mode["value"]
     view.data = {
         "rebuild": lambda: tags_view(page),
         "tag_filters": selected,
+        "tag_sort": sort_mode["value"],
     }
     scroll_memory.remember(page, "/statistics/tags", "page", page_col)
     scroll_memory.schedule_restore(page, view)
@@ -520,7 +599,12 @@ def tags_view(page: ft.Page) -> ft.View:
         chart_holder.width = width
         filter_block.width = width
         chips_row.width = width
-        chips_row.controls = [chip_control(tag) for tag in selected]
+        chips_row.controls = (
+            [sort_button, *[chip_control(tag) for tag in selected]]
+            if selected
+            else []
+        )
+        chips_row.visible = bool(selected)
         chart_holder.controls = [build_chart(width, animate=animate)]
         anim_state["run"] = animate
 
@@ -539,21 +623,15 @@ def tags_view(page: ft.Page) -> ft.View:
         except Exception:
             pass
 
-    previous_resize = page.on_resize
-
     def on_resize(event: ft.ControlEvent | None = None) -> None:
+        # 仅栈顶响应
         if view in page.views and page.views[-1] is view:
             rebuild(animate=False)
-            return
-        if (
-            previous_resize is not None
-            and previous_resize is not on_resize
-        ):
-            previous_resize(event)
 
-    page.on_resize = on_resize
+    register_resize_handler(page, "/statistics/tags", on_resize)
     if play_animation:
         page.run_task(animate_bars)
+    _attach_overlay_cleanup(view, overlay)
     return view
 
 

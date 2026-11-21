@@ -13,7 +13,6 @@ class DetailKind:
 
 ENTRY = DetailKind("entry", "条目")
 CATEGORY = DetailKind("category", "类型")
-AUTHOR = DetailKind("author", "作者")
 STUDIO = DetailKind("studio", "制作公司")
 BROADCAST = DetailKind("broadcast", "发布日")
 QUARTER = DetailKind("quarter", "年×季度")
@@ -26,7 +25,6 @@ TAG = DetailKind("tag", "TAG")
 DETAIL_FIELDS: dict[DetailKind, str] = {
     ENTRY: "anime",
     CATEGORY: "category",
-    AUTHOR: "author",
     STUDIO: "studio",
     BROADCAST: "broadcast",
     QUARTER: "broadcast",

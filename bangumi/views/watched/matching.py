@@ -12,10 +12,12 @@ from bangumi.views.watched.constants import (
     WATCHLIST_LENGTH_RATIO,
 )
 from bangumi.data.watched_data import Record
+from bangumi.core.text_variants import fold_variants
 
 
 def normalize_watchlist_name(value: object) -> str:
-    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = fold_variants(text).casefold()
     return "".join(char for char in text if char.isalnum())
 WATCHLIST_FINAL_RE = re.compile(r"(?:最终季|最终章)$")
 WATCHLIST_SEASON_RE = re.compile(

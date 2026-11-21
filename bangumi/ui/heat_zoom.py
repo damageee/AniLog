@@ -23,6 +23,7 @@ def attach_heat_zoom(
     duration: int = 160,
     on_tap=None,
     initial_scale: float = 1.0,
+    pulse: bool = True,
 ) -> ft.Container:
     control.scale = ft.Scale(initial_scale)
     control.animate_scale = animation(duration)
@@ -45,15 +46,47 @@ def attach_heat_zoom(
         except Exception:
             pass
 
+    def do_pulse() -> None:
+        """单击缩放脉冲：放大后短暂恢复原比例。"""
+        current = control.scale
+        base = 1.0
+        if isinstance(current, ft.Scale):
+            try:
+                base = float(current.scale or 1.0)
+            except (TypeError, ValueError):
+                base = 1.0
+        peak = max(base, target)
+        control.scale = ft.Scale(peak)
+        try:
+            control.update()
+        except Exception:
+            pass
+
+        async def restore() -> None:
+            await asyncio.sleep(0.12)
+            current_scale = control.scale
+            value = (
+                float(current_scale.scale or 1.0)
+                if isinstance(current_scale, ft.Scale)
+                else 1.0
+            )
+            # 悬停等状态可能已改变比例，只在仍为脉冲值时恢复。
+            if abs(value - peak) < 0.001:
+                control.scale = ft.Scale(base)
+                try:
+                    control.update()
+                except Exception:
+                    pass
+
+        page.run_task(restore)
+
+    control.pulse = do_pulse if pulse else None
+
     if is_desktop(page):
         control.on_hover = lambda event: apply(is_hover(event))
     else:
-        def on_click(event: ft.ControlEvent) -> None:
-            apply(True)
-            if on_tap is not None:
-                on_tap(event)
-
-        control.on_click = on_click
+        # 移动端由外层 GestureDetector 处理点击，避免拦截 on_tap。
+        control.on_click = None
     return control
 
 

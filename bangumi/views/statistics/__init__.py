@@ -8,9 +8,10 @@ page.py                    统计主页。
 overview.py                统计总览页。
 journey.py                 旅途（补完曲线/日历）页。
 tags.py                    标签统计页。
+staff.py                   制作人员（班底）页。
 best_records.py            纪录页。
 data_check.py               数据质量检查页。
-broadcast/                 放送统计（page / year / quarter / year_quarter）。
+broadcast/                 放送统计（page / year / quarter）。
 studios/                   制作公司（page / search / honor / scatter / homepage）。
 cast/                      声优（page / search / detail）。
 rating/                    评分（view）。

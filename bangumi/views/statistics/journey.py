@@ -19,13 +19,12 @@ from bangumi.ui.anim import (
     animation,
     entry_animations_enabled,
 )
-from bangumi.ui.interaction import is_attached
+from bangumi.ui.interaction import is_attached, tooltip_colors
 from bangumi.ui.page_state import first_entry, mark_seen
 from bangumi.ui.theme import (
     ui_text,
 )
 from bangumi.ui.colors import (
-    background_color,
     foreground_color,
 )
 from bangumi.views.navigation import (
@@ -37,20 +36,25 @@ from bangumi.ui.layout import (
 from bangumi.ui.layout import chart_width as fit_chart_width
 from bangumi.data.statistics.models import (
     CompletionPoint,
-    JourneyData,
 )
 from bangumi.data.statistics.records import _record_item
 from bangumi.data.statistics.journey import journey_data
 from bangumi.data.sorting import sort_detail_items
 from bangumi.views.templates.list_page import (
-    build_list_view,
     open_list_page,
+)
+from bangumi.views.general.detail_completion import (
+    _EMPTY_MONTH_COLOR,
+    _EMPTY_MONTH_MESSAGE,
+    _EMPTY_MONTH_SIZE,
+    open_completion_month,
 )
 from bangumi.views.statistics.common.overlays import (
     _OverlayLayers,
     _hide_page_overlay,
     _install_overlay_hook,
     _overlay_placement,
+    _attach_overlay_cleanup,
     _register_overlay,
 )
 from bangumi.views.statistics.common.shared import (
@@ -68,101 +72,13 @@ from bangumi.views.statistics.common.shared import (
 )
 
 
-_EMPTY_MONTH_MESSAGE = "你呀，真是怠惰呢！"
-
-
-_EMPTY_MONTH_COLOR = "#166534"
-
-
-_EMPTY_MONTH_SIZE = 30
-
-
-def _open_month_list(
-    page: ft.Page,
-    data: JourneyData,
-    key: tuple[int, int],
-) -> None:
-    """打开某个月的补完列表，或其空状态页面。"""
-    month_points = [
-        point
-        for point in data.points
-        if (point.date.year, point.date.month) == key
-    ]
-    title = f"{key[0]}.{key[1]:02d} 补完"
-    route = f"/statistics/journey/month/{key[0]}-{key[1]:02d}"
-    if month_points:
-        _hide_page_overlay(page)
-
-        def rebuild_month() -> ft.View:
-            fresh = journey_data()
-            fresh_points = [
-                point
-                for point in fresh.points
-                if (point.date.year, point.date.month) == key
-            ]
-            return build_list_view(
-                page,
-                title=title,
-                route=route,
-                entries=sort_detail_items(
-                    [
-                        _record_item(point.record)
-                        for point in fresh_points
-                    ]
-                ),
-                records=fresh.records,
-                before=lambda: _hide_page_overlay(page),
-            )
-
-        open_list_page(
-            page,
-            title=title,
-            route=route,
-            entries=sort_detail_items(
-                [
-                    _record_item(point.record)
-                    for point in month_points
-                ]
-            ),
-            records=data.records,
-            before=lambda: _hide_page_overlay(page),
-            rebuild=rebuild_month,
-        )
-        return
-    _hide_page_overlay(page)
-    if page.views and getattr(page.views[-1], "route", "") == route:
-        return
-
-    def build_empty() -> ft.View:
-        return _back_view(
-            page,
-            route=route,
-            title=title,
-            rebuild=build_empty,
-            controls=[
-                ft.Container(
-                    expand=True,
-                    alignment=ft.Alignment.CENTER,
-                    content=ui_text(
-                        _EMPTY_MONTH_MESSAGE,
-                        size=_EMPTY_MONTH_SIZE,
-                        color=_EMPTY_MONTH_COLOR,
-                        weight=ft.FontWeight.BOLD,
-                    ),
-                )
-            ],
-        )
-
-    push_view(page, build_empty())
-
-
 def open_month_completion(
     page: ft.Page,
     year: int,
     month: int,
 ) -> None:
-    """Open the completion list for a month (used by the 已阅 table)."""
-    _open_month_list(page, journey_data(), (year, month))
+    """打开某个月的补完列表（供已阅表格使用）。"""
+    open_completion_month(page, year, month)
 
 
 def _journey_shapes(
@@ -329,24 +245,16 @@ def journey_view(page: ft.Page) -> ft.View:
     }
     curve_anim = {"running": bool(animate)}
 
-    curve_label_text = ui_text("", size=11, color=fg)
+    tip_bg, tip_fg = tooltip_colors(page)
+    curve_label_text = ui_text("", size=11, color=tip_fg)
     curve_label = ft.Container(
         width=250,
         height=36,
         alignment=ft.Alignment.CENTER,
         ignore_interactions=True,
         padding=ft.Padding.symmetric(horizontal=10, vertical=6),
-        border_radius=8,
-        bgcolor=background_color(page),
-        border=ft.Border.all(
-            1,
-            ft.Colors.with_opacity(0.25, entries_color),
-        ),
-        shadow=ft.BoxShadow(
-            blur_radius=10,
-            color=ft.Colors.with_opacity(0.2, ft.Colors.BLACK),
-            offset=ft.Offset(2, 4),
-        ),
+        border_radius=4,
+        bgcolor=ft.Colors.with_opacity(0.95, tip_bg),
         content=curve_label_text,
     )
     active_month: dict[str, tuple[int, int] | None] = {"key": None}
@@ -408,8 +316,15 @@ def journey_view(page: ft.Page) -> ft.View:
         height=JOURNEY_HEIGHT,
         shapes=[],
     )
+    # Stack 不设宽度，宽度由 canvas 决定；不裁切，避免曲线溢出被截断。
+    canvas_stack = ft.Stack(
+        height=JOURNEY_HEIGHT,
+        clip_behavior=ft.ClipBehavior.NONE,
+        controls=[canvas],
+    )
 
     def redraw_curve() -> None:
+        canvas.width = chart_width
         canvas.shapes = _journey_shapes(
             months=months,
             month_entries=data.month_entries,
@@ -422,6 +337,15 @@ def journey_view(page: ft.Page) -> ft.View:
             episodes_color=episodes_color,
             cumulative=chart_state["cumulative"],
         )
+
+    def finish_curve() -> None:
+        curve_anim["running"] = False
+        chart_state["revealed"] = len(months)
+        redraw_curve()
+        try:
+            canvas.update()
+        except Exception:
+            pass
 
     def month_at(event: ft.ControlEvent) -> tuple[int, int]:
         pos = getattr(event, "local_position", None)
@@ -440,11 +364,20 @@ def journey_view(page: ft.Page) -> ft.View:
             key = month_at(event)
         show_month(event, key)
 
+    def open_curve_month(event: ft.ControlEvent) -> None:
+        year, month = month_at(event)
+        open_completion_month(
+            page,
+            year,
+            month,
+            records=data.records,
+        )
+
     curve_gesture = ft.GestureDetector(
-        width=chart_width,
         height=JOURNEY_HEIGHT,
         on_enter=lambda event: show_month(event, month_at(event)),
         on_hover=on_curve_hover,
+        on_tap=open_curve_month,
         on_long_press_start=(
             lambda event: show_month(event, month_at(event))
         ),
@@ -454,43 +387,57 @@ def journey_view(page: ft.Page) -> ft.View:
         on_long_press_end=lambda event: hide_curve_label(),
         on_long_press_cancel=lambda event: hide_curve_label(),
         on_exit=lambda event: hide_curve_label(),
-        content=canvas,
+        content=canvas_stack,
     )
 
     chart_content = ft.Container(
-        width=chart_width,
+        expand=1,
         height=JOURNEY_HEIGHT,
         content=curve_gesture,
     )
 
+    # resize 防抖：拖动期间只记录目标宽度并调度，停手后只重绘一次 canvas。
+    resize_token = {"value": 0}
+
     def on_curve_frame(event) -> None:
         nonlocal chart_width, slot
-        width = min(
-            default_width,
-            max(120.0, float(event.width or 0)),
-        )
+        width = float(getattr(event, "width", 0) or 0)
         if width <= 0:
+            width = min(
+                default_width,
+                max(120.0, float(page.width or 1000) - 64.0),
+            )
+        width = min(default_width, max(120.0, width))
+        if abs(width - chart_width) < 1:
             return
         chart_width = width
-        slot = width / len(months)
-        if not curve_anim["running"]:
-            chart_state["revealed"] = len(months)
-        redraw_curve()
-        canvas.width = width
-        curve_gesture.width = width
-        chart_content.width = width
+        slot = width / len(months) if months else 0.0
+        resize_token["value"] += 1
+        token = resize_token["value"]
+
+        async def apply() -> None:
+            await asyncio.sleep(0.15)
+            if resize_token["value"] != token:
+                return
+            redraw_curve()
+            try:
+                canvas.update()
+            except Exception:
+                pass
+
         try:
-            canvas.update()
-        except Exception:
-            pass
-        try:
-            chart_content.update()
-        except Exception:
+            page.run_task(apply)
+        except RuntimeError:
             pass
 
     curve_frame = ft.Row(
-        on_size_change=on_curve_frame,
         controls=[chart_content],
+        on_size_change=on_curve_frame,
+    )
+    # 右侧留出 16px，避免图表右边缘被滚动条覆盖。
+    chart_holder = ft.Container(
+        padding=ft.Padding.only(right=16),
+        content=curve_frame,
     )
 
     entries_check = ft.Checkbox(
@@ -517,7 +464,10 @@ def journey_view(page: ft.Page) -> ft.View:
         chart_state["episodes"] = chart_toggles["episodes"]
         chart_state["cumulative"] = chart_toggles["cumulative"]
         redraw_curve()
-        canvas.update()
+        try:
+            canvas.update()
+        except Exception:
+            pass
 
     entries_check.on_change = on_toggle
     episodes_check.on_change = on_toggle
@@ -578,18 +528,9 @@ def journey_view(page: ft.Page) -> ft.View:
     day_label = ft.Container(
         width=250,
         ignore_interactions=True,
-        padding=ft.Padding.symmetric(horizontal=10, vertical=8),
-        border_radius=8,
-        bgcolor=background_color(page),
-        border=ft.Border.all(
-            1,
-            ft.Colors.with_opacity(0.25, entries_color),
-        ),
-        shadow=ft.BoxShadow(
-            blur_radius=10,
-            color=ft.Colors.with_opacity(0.2, ft.Colors.BLACK),
-            offset=ft.Offset(2, 4),
-        ),
+        padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+        border_radius=4,
+        bgcolor=ft.Colors.with_opacity(0.95, tip_bg),
         content=ft.Column(spacing=2),
     )
     active_day: dict[str, dt.date | None] = {"day": None}
@@ -601,7 +542,7 @@ def journey_view(page: ft.Page) -> ft.View:
     ) -> None:
         if view not in page.views or page.views[-1] is not view:
             return
-        label_text = f"{day.strftime('%Y.%m.%d')}  {len(points)}部"
+        label_text = f"{day.strftime('%Y.%m.%d')} · {len(points)}部"
         width = max(
             96,
             text_width(label_text, size=11, bold=True) + 30,
@@ -611,6 +552,7 @@ def journey_view(page: ft.Page) -> ft.View:
             label_text,
             size=11,
             weight=ft.FontWeight.BOLD,
+            color=tip_fg,
             no_wrap=True,
             overflow=ft.TextOverflow.VISIBLE,
             text_align=ft.TextAlign.CENTER,
@@ -1019,7 +961,7 @@ def journey_view(page: ft.Page) -> ft.View:
                 weight=ft.FontWeight.BOLD,
                 color=fg,
             ),
-            curve_frame,
+            chart_holder,
             legend,
             ft.Container(height=6),
             ft.Row(
@@ -1041,6 +983,7 @@ def journey_view(page: ft.Page) -> ft.View:
             calendar_holder,
         ],
         spacing=10,
+        stretch=True,
     )
     view = _back_view(
         page,
@@ -1071,18 +1014,18 @@ def journey_view(page: ft.Page) -> ft.View:
             page.views
             and str(getattr(page.views[-1], "route", "")) == route
         ):
-            curve_anim["running"] = False
+            finish_curve()
             return
         if not await wait_until_ready(page, canvas):
             if not await wait_until_ready(page, canvas):
-                curve_anim["running"] = False
+                finish_curve()
                 return
         if not (
             page.views
             and str(getattr(page.views[-1], "route", "")) == route
             and is_attached(canvas)
         ):
-            curve_anim["running"] = False
+            finish_curve()
             return
         mark_seen(page, route)
         steps = ANIMATION_STEPS
@@ -1091,7 +1034,7 @@ def journey_view(page: ft.Page) -> ft.View:
                 page.views
                 and str(getattr(page.views[-1], "route", "")) == route
             ):
-                curve_anim["running"] = False
+                finish_curve()
                 return
             eased = 1 - (1 - step / steps) ** 3
             chart_state["revealed"] = max(
@@ -1102,20 +1045,12 @@ def journey_view(page: ft.Page) -> ft.View:
             try:
                 canvas.update()
             except RuntimeError:
-                curve_anim["running"] = False
+                finish_curve()
                 return
             except Exception:
                 pass
             await asyncio.sleep(ANIMATION_SECONDS / steps)
-        curve_anim["running"] = False
-        chart_state["revealed"] = len(months)
-        redraw_curve()
-        try:
-            canvas.update()
-        except RuntimeError:
-            return
-        except Exception:
-            pass
+        finish_curve()
 
     redraw_curve()
     view_data = view.data if isinstance(view.data, dict) else {}
@@ -1124,6 +1059,7 @@ def journey_view(page: ft.Page) -> ft.View:
     if animate:
         page.run_task(animate_curve)
         page.run_task(animate_cells, initial_cells)
+    _attach_overlay_cleanup(view, overlay)
     return view
 
 

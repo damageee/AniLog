@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import date
 from typing import Any
 
@@ -16,13 +16,12 @@ from bangumi.ui.tag_colors import is_valid_color
 from bangumi.data.watched_data import WATCHED_COLUMNS
 
 COLUMN_KEYS = [key for key, _ in WATCHED_COLUMNS]
-DATA_COLUMN_KEYS = [key for key in COLUMN_KEYS if key != "number"]
 FIXED_COLUMN_KEYS = (
     "anime",
     "specification",
     "category",
     "tag",
-    "author",
+    "staff",
     "studio",
     "broadcast",
     "role",
@@ -34,23 +33,14 @@ DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
 
 
-def _default_visible_columns() -> dict[str, bool]:
-    return {key: True for key in COLUMN_KEYS}
-
-
 @dataclass
 class Preferences:
-    merge_same_anime: bool = False
     highlight_public_sequels: bool = True
     page_size: int = DEFAULT_PAGE_SIZE
     theme_mode: str = "light"
     animation_mode: str = "full"
-    column_order: list[str] = field(default_factory=lambda: list(COLUMN_KEYS))
     sort_column: str = ""
     sort_ascending: bool = False
-    visible_columns: dict[str, bool] = field(
-        default_factory=_default_visible_columns
-    )
     tag_colors: dict[str, str] = field(default_factory=dict)
     tag_color_version: int = 0
     fixed_columns: list[str] = field(default_factory=list)
@@ -61,6 +51,7 @@ class Preferences:
     detail_show_rating: bool = True
     detail_show_completion: bool = True
     detail_show_remark: bool = True
+    bilibili_uid: str = ""
 
     @classmethod
     def load(cls) -> Preferences:
@@ -80,13 +71,59 @@ class Preferences:
             return preferences
         if isinstance(saved, dict):
             preferences._apply_saved(saved)
+            # 旧 JSON 里有已删除字段时，读完后重写一次清理冗余键。
+            known = {
+                item.name for item in fields(type(preferences))
+            }
+            if any(key not in known for key in saved):
+                try:
+                    preferences.save()
+                except OSError:
+                    pass
         if source == legacy:
             try:
                 preferences.save()
                 legacy.unlink(missing_ok=True)
             except OSError:
                 pass
+        # ===== 旧 bilibili_import.json 迁移 =====
+        if not preferences.bilibili_uid:
+            old_path = None
+            old_data = None
+            try:
+                from bangumi.views.watchlist.utils import (
+                    bilibili_import_file,
+                )
+
+                old_path = bilibili_import_file()
+                if old_path.is_file():
+                    old_data = read_json(old_path)
+            except Exception:
+                old_path = None
+                old_data = None
+            if isinstance(old_data, dict):
+                uid = str(old_data.get("uid") or "").strip()
+                if uid.isdigit():
+                    preferences.bilibili_uid = uid
+                    try:
+                        preferences.save()
+                    except OSError:
+                        pass
+            # 读取后删除旧文件（无效文件也一并清理）。
+            if old_path is not None:
+                try:
+                    old_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
         return preferences
+
+    @classmethod
+    def migrate_legacy_bilibili_uid(cls) -> None:
+        """若缺少 UID，尝试从旧 bilibili_import.json 迁移（幂等）。"""
+        try:
+            cls.load()
+        except Exception:
+            pass
 
     def save(self) -> None:
         write_json(preferences_file(), asdict(self))
@@ -99,12 +136,12 @@ class Preferences:
             self.theme_mode = theme_mode
 
     def _apply_saved(self, saved: dict[str, Any]) -> None:
-        self.merge_same_anime = bool(
-            saved.get("merge_same_anime", self.merge_same_anime)
-        )
         self.highlight_public_sequels = bool(
             saved.get("highlight_public_sequels", self.highlight_public_sequels)
         )
+        self.bilibili_uid = str(
+            saved.get("bilibili_uid", self.bilibili_uid) or ""
+        ).strip()
 
         try:
             page_size = int(saved.get("page_size", self.page_size))
@@ -126,27 +163,9 @@ class Preferences:
         else:
             self.animation_mode = "full"
 
-        saved_order = saved.get("column_order")
-        if isinstance(saved_order, list):
-            # `number` 为派生列，始终位于首位且不可重排。
-            saved_data_columns = list(
-                dict.fromkeys(
-                    key
-                    for key in saved_order
-                    if key in DATA_COLUMN_KEYS
-                )
-            )
-            self.column_order = [
-                "number",
-                *saved_data_columns,
-                *(
-                    key
-                    for key in DATA_COLUMN_KEYS
-                    if key not in saved_data_columns
-                ),
-            ]
-
         sort_column = saved.get("sort_column")
+        if sort_column == "author":
+            sort_column = "staff"
         if (
             isinstance(sort_column, str)
             and sort_column in COLUMN_KEYS
@@ -156,12 +175,6 @@ class Preferences:
         self.sort_ascending = bool(
             saved.get("sort_ascending", self.sort_ascending)
         )
-
-        saved_visible = saved.get("visible_columns")
-        if isinstance(saved_visible, dict):
-            for key in self.visible_columns:
-                if key in saved_visible:
-                    self.visible_columns[key] = bool(saved_visible[key])
 
         saved_tag_colors = saved.get("tag_colors")
         if isinstance(saved_tag_colors, dict):

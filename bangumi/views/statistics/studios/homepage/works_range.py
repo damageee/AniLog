@@ -13,6 +13,7 @@ from bangumi.data.watched_data import (
 )
 from bangumi.views.general.bar_chart import build_bar_chart_view
 from bangumi.views.navigation import ENTRY, open_detail, push_view
+from bangumi.views.statistics.common.shared import range_label
 
 
 def _studio_range_view(
@@ -69,7 +70,7 @@ def _studio_range_view(
         entries,
         max_value=100,
         reverse=False,
-        title=f"{name}（{start}~{end}）",
+        title=f"{name}（{range_label(start, end)}）",
         route=route,
         decimals=0,
         on_bar_click=on_bar_click,

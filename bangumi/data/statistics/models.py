@@ -18,8 +18,11 @@ class OverviewData:
     tv_count: int
     tv_episodes: int
     ova_count: int
+    ova_episodes: int
     oad_count: int
+    oad_episodes: int
     sp_count: int
+    sp_episodes: int
     movie_count: int
     movie_minutes: int
     feature_count: int

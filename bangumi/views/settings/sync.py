@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+
 import flet as ft
 import bangumi.io.app_data as app_data
 from bangumi.ui.theme import (
@@ -93,6 +95,29 @@ def _choose_share(page: ft.Page) -> None:
         ]
     )
 
+    progress_bar = ft.ProgressBar(width=340, value=0)
+    progress_text = ui_text("等待设备连接…", size=12)
+    progress_file = ui_text("", size=11)
+
+    async def _share_progress(sent, total, name) -> None:
+        progress_bar.value = 0 if total <= 0 else sent / total
+        progress_text.value = f"正在同步 {sent}/{total}"
+        progress_file.value = name
+        try:
+            page.update(progress_bar, progress_text, progress_file)
+        except Exception:
+            pass
+
+    server.on_progress = lambda sent, total, name: page.run_task(
+        _share_progress, sent, total, name
+    )
+
+    def abort_share(event: ft.ControlEvent | None = None) -> None:
+        server.abort()
+        server.stop()
+        page.pop_dialog()
+        show_toast(page, "已中止传输")
+
     def stop_share(event: ft.ControlEvent | None = None) -> None:
         server.stop()
         page.pop_dialog()
@@ -110,10 +135,19 @@ def _choose_share(page: ft.Page) -> None:
             content=ft.Column(
                 tight=True,
                 spacing=8,
-                controls=lines,
+                controls=[
+                    *lines,
+                    progress_bar,
+                    progress_text,
+                    progress_file,
+                ],
             ),
         ),
         actions=[
+            ft.TextButton(
+                content=ui_text("中止"),
+                on_click=abort_share,
+            ),
             ft.TextButton(
                 content=ui_text("停止共享"),
                 on_click=stop_share,
@@ -249,6 +283,35 @@ def _show_pull_dialog(
         size=12,
     )
     pull_button = ft.Button(content=ui_text("拉取"))
+    progress_bar = ft.ProgressBar(width=340, value=0, visible=False)
+    progress_text = ui_text("", size=12, visible=False)
+    progress_file = ui_text("", size=11, visible=False)
+    abort_event = threading.Event()
+    progress_state = {"received": 0, "total": 0}
+
+    async def _pull_progress(received: int, total: int, name: str) -> None:
+        progress_state["received"] = received
+        progress_state["total"] = total
+        progress_bar.value = 0 if total <= 0 else received / total
+        progress_text.value = f"正在同步 {received}/{total}"
+        progress_file.value = name
+        try:
+            page.update(progress_bar, progress_text, progress_file)
+        except Exception:
+            pass
+
+    def on_progress(received: int, total: int, name: str) -> None:
+        page.run_task(_pull_progress, received, total, name)
+
+    abort_button = ft.TextButton(
+        content=ui_text("中止"),
+        disabled=True,
+    )
+
+    def abort_pull(event: ft.ControlEvent | None = None) -> None:
+        abort_event.set()
+
+    abort_button.on_click = abort_pull
 
     def target() -> tuple[str, int, str]:
         manual = (manual_field.value or "").strip()
@@ -275,16 +338,28 @@ def _show_pull_dialog(
             return
 
         pull_button.disabled = True
-        status.value = "正在拉取…"
-        page.update(pull_button, status)
+        abort_button.disabled = False
+        device_dropdown.visible = False
+        manual_field.visible = False
+        pair_field.visible = False
+        status.visible = False
+        progress_bar.visible = True
+        progress_text.visible = True
+        progress_file.visible = True
         try:
-            document = await asyncio.to_thread(
+            page.update()
+        except Exception:
+            pass
+        try:
+            document, aborted = await asyncio.to_thread(
                 app_data.pull_document,
                 host,
                 port,
                 code,
                 app_data.NETWORK_TIMEOUT,
                 include_covers=include_covers,
+                progress=on_progress,
+                abort_event=abort_event,
             )
         except app_data.SyncError as error:
             close_dialog(dialog)
@@ -305,10 +380,19 @@ def _show_pull_dialog(
         finally:
             if dialog.open:
                 pull_button.disabled = False
+                abort_button.disabled = True
                 pull_button.update()
+                abort_button.update()
 
         close_dialog(dialog)
-        _show_sync_summary(page, document, source)
+        _show_sync_summary(
+            page,
+            document,
+            source,
+            aborted=aborted,
+            received=progress_state["received"],
+            total=progress_state["total"],
+        )
 
     pull_button.on_click = lambda event: page.run_task(do_pull)
 
@@ -325,6 +409,9 @@ def _show_pull_dialog(
                     manual_field,
                     pair_field,
                     status,
+                    progress_bar,
+                    progress_text,
+                    progress_file,
                 ],
             ),
         ),
@@ -333,6 +420,7 @@ def _show_pull_dialog(
                 content=ui_text("取消"),
                 on_click=lambda event: close_dialog(dialog),
             ),
+            abort_button,
             pull_button,
         ],
     )
@@ -355,15 +443,29 @@ def _show_sync_summary(
     page: ft.Page,
     document: dict[str, object],
     source: str,
+    *,
+    aborted: bool = False,
+    received: int = 0,
+    total: int = 0,
 ) -> None:
     files = document.get("files")
+    covers = document.get("covers")
     file_count = len(files) if isinstance(files, dict) else 0
-    summary = ui_text(
-        f"来源设备：{source}\n"
-        f"文件数：{file_count}\n"
+    cover_count = len(covers) if isinstance(covers, dict) else 0
+    item_count = file_count + cover_count
+    if total > 0:
+        item_count = total
+    lines = [
+        f"来源设备：{source}",
+        f"文件数：{item_count}",
+        f"其中：JSON {file_count} 个，封面图 {cover_count} 张",
         f"版本：{document.get('version', '')}",
-        size=14,
-    )
+    ]
+    if aborted:
+        lines.append(
+            f"已接收部分数据（尚未应用）：{received}/{total}"
+        )
+    summary = ui_text("\n".join(lines), size=14)
 
     previous = _ACTIVE_SYNC_DIALOGS.pop(id(page), None)
     if previous is not None:
@@ -405,18 +507,31 @@ def _show_sync_summary(
 
     dialog = ft.AlertDialog(
         modal=True,
-        title=ui_text("确认同步"),
+        title=ui_text("传输已中止" if aborted else "确认同步"),
         content=summary,
-        actions=[
-            ft.TextButton(
-                content=ui_text("取消"),
-                on_click=lambda event: close_dialog(),
-            ),
-            ft.Button(
-                content=ui_text("应用"),
-                on_click=apply,
-            ),
-        ],
+        actions=(
+            [
+                ft.TextButton(
+                    content=ui_text("暂不应用"),
+                    on_click=lambda event: close_dialog(),
+                ),
+                ft.Button(
+                    content=ui_text("应用已接收数据"),
+                    on_click=apply,
+                ),
+            ]
+            if aborted
+            else [
+                ft.TextButton(
+                    content=ui_text("取消"),
+                    on_click=lambda event: close_dialog(),
+                ),
+                ft.Button(
+                    content=ui_text("应用"),
+                    on_click=apply,
+                ),
+            ]
+        ),
     )
     _ACTIVE_SYNC_DIALOGS[id(page)] = dialog
     page.show_dialog(dialog)

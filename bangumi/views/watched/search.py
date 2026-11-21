@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 
+import asyncio
+
 import flet as ft
 
 from bangumi.ui.text_metrics import text_width, truncate_display
@@ -19,12 +21,20 @@ from bangumi.ui.interaction import (
 from bangumi.views.general.detail_role import first_role_name
 from bangumi.data.watched_data import (
     Record,
+    staff_display,
     split_tags,
 )
 
 from bangumi.views.watched.constants import *
 
+
+def display_broadcast(record: Record) -> str:
+    """界面上显示的放送文本；搜索与高亮都以它为准。"""
+    return str(record.get("broadcast", "") or "").replace("\n", " ")
+
+
 class SearchMixin:
+
     def _create_search_field(self) -> ft.TextField:
         dark = self.page.theme_mode == ft.ThemeMode.DARK
         foreground = foreground_color(self.page)
@@ -38,7 +48,7 @@ class SearchMixin:
                 size=14,
                 color=foreground,
             ),
-            hint_text="查找",
+            hint_text="搜索动画、制作公司…",
             hint_style=ui_text_style(
                 size=14,
                 color=secondary,
@@ -57,7 +67,28 @@ class SearchMixin:
                 bottom=10,
             ),
             on_submit=self._on_search_submit,
+            on_change=self._on_search_change,
+            on_focus=self._on_search_focus,
+            on_blur=self._on_search_blur,
         )
+
+    def _on_search_change(self, event: ft.ControlEvent) -> None:
+        """输入防抖 120ms，停手后再过滤。"""
+        value = str(event.control.value or "")
+        self._search_token += 1
+        token = self._search_token
+        self.page.run_task(self._debounced_search, token, value)
+
+    async def _debounced_search(self, token: int, value: str) -> None:
+        await asyncio.sleep(0.12)
+        if token != self._search_token:
+            return
+        # 只有与上次实际应用的查询不同才重算（初始为空也允许跑一次）。
+        if value == getattr(self, "_applied_query", None):
+            return
+        self._applied_query = value
+        self.search_query = value
+        self._refresh_search(reset_current=True)
 
     def _create_search_box(self) -> ft.Stack:
         dark = self.page.theme_mode == ft.ThemeMode.DARK
@@ -131,6 +162,10 @@ class SearchMixin:
         )
 
     def _search_text(self, record: Record, key: str) -> str:
+        if key == "broadcast":
+            return display_broadcast(record)
+        if key == "staff":
+            return staff_display(record)
         if key == "role":
             return first_role_name(
                 str(record.get("role", "") or "")
@@ -159,11 +194,11 @@ class SearchMixin:
         return None
 
     def _search_columns(self) -> list[str]:
-        return [
-            key
-            for key, _ in self._visible_column_labels()
-            if key not in ("number", "entry")
-        ]
+        # 只搜索当前可见列；制作公司在窄布局下隐藏。
+        columns = ["anime", "staff", "tag", "broadcast"]
+        if float(self.page.width or 1000) >= 1100:
+            columns.insert(3, "studio")
+        return columns
 
     def _recompute_search(self) -> None:
         if not self.search_query:
@@ -212,10 +247,39 @@ class SearchMixin:
             else ""
         )
         self._fit_search_count()
+        # 立即下发按钮与计数，避免只更新表体后头部不刷新。
+        for control in (
+            self.search_prev_button,
+            self.search_next_button,
+            self.search_count,
+        ):
+            try:
+                control.update()
+            except Exception:
+                pass
+
+    async def _refocus_search(self) -> None:
+        """延迟重聚焦，避免被客户端 submit 行为抢走焦点。"""
+        await asyncio.sleep(0.05)
+        try:
+            self.search_field.focus()
+            self.page.update()
+        except Exception:
+            pass
+
+    def _on_search_focus(self, event: ft.ControlEvent) -> None:
+        self._search_focused = True
+
+    def _on_search_blur(self, event: ft.ControlEvent) -> None:
+        self._search_focused = False
 
     def _on_search_submit(self, event: ft.ControlEvent) -> None:
-        self.search_query = str(event.control.value or "")
-        self.search_field.value = self.search_query
+        # 回车只做一件事：定位第一条（随后自然失焦）。
+        value = str(event.control.value or "")
+        self._search_token += 1
+        self.search_query = value
+        self._applied_query = value
+        self.search_field.value = value
         self._refresh_search(reset_current=True)
 
     def _step_search(self, delta: int) -> None:
@@ -264,15 +328,24 @@ class SearchMixin:
         record_index, column_key, _, _, _ = self.search_results[
             self.search_current
         ]
+        previous_page = self.current_page
         self.current_page = min(
             max(record_index // self.page_size, 0),
             self._total_pages() - 1,
         )
         self.state.current_page = self.current_page
-        self.refresh(
-            restore_scroll=False,
-            update_header=update_header,
-        )
+        if (
+            self.current_page == previous_page
+            and self.table_exists
+            and hasattr(self, "_update_search_rows")
+        ):
+            # 同页切换：只重绘新旧两行。
+            self._update_search_rows(record_index)
+            self._update_search_buttons()
+            self._schedule_search_scroll(record_index, column_key)
+            return
+        # 跨页或特殊布局：全量刷新。
+        self.refresh(restore_scroll=False)
         self._schedule_search_scroll(record_index, column_key)
 
     def _schedule_search_scroll(

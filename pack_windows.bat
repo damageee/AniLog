@@ -8,7 +8,7 @@ set "PYTHONIOENCODING=utf-8"
 set "BAT_RC=0"
 
 set APP_NAME=AniLog
-set APP_VERSION=0.1.0
+set APP_VERSION=0.2.0
 set PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 set PIP_TIMEOUT=60
 set PYTHON=.venv\Scripts\python.exe
@@ -51,19 +51,25 @@ if errorlevel 1 (
 )
 
 echo [INFO] Packing into a single exe...
-rem --add-data with a directory includes the whole tree recursively,
-rem so every file under assets\ is bundled automatically.
-"%FLET%" pack main.py ^
+rem Run flet pack in a separate workdir to avoid clearing project build dir.
+set "PACK_WORK=%~dp0build_pack_windows"
+if not exist "%PACK_WORK%" mkdir "%PACK_WORK%"
+set "PYTHONPATH=%~dp0"
+pushd "%PACK_WORK%"
+"%~dp0.venv\Scripts\flet.exe" pack "%~dp0main.py" ^
     -n %APP_NAME% ^
-    -i "assets\pic\icon.ico" ^
+    -i "%~dp0assets\pic\icon.ico" ^
     --product-name %APP_NAME% ^
     --product-version %APP_VERSION% ^
     --file-description "AniLog" ^
-    --add-data "assets;assets" ^
-    --distpath dist ^
+    --add-data "%~dp0assets;assets" ^
+    --add-data "%~dp0.venv\Lib\site-packages\pykakasi\data;pykakasi\data" ^
+    --distpath "%~dp0dist" ^
     -y
+set "PACK_RC=%errorlevel%"
+popd
 
-if errorlevel 1 (
+if not "%PACK_RC%"=="0" (
     echo [ERROR] flet pack failed.
     echo Check the PyInstaller output above.
     goto :fail

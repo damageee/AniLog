@@ -8,10 +8,8 @@ import flet as ft
 from bangumi.ui.anim import animation
 from bangumi.ui.events import is_hover
 
-from bangumi.ui.colors import (
-    background_color,
-    foreground_color,
-)
+from bangumi.ui.colors import foreground_color
+from bangumi.ui.interaction import tooltip_colors
 from bangumi.ui.constants import ANIM_SLOW_MS
 from bangumi.ui.platform import is_mobile
 from bangumi.ui.text_metrics import text_width
@@ -25,7 +23,7 @@ _EGG_STATES: dict[int, dict] = {}
 
 def build_profile_block(page: ft.Page) -> ft.Control:
     fg = foreground_color(page)
-    bg = background_color(page)
+    bg, tip_fg = tooltip_colors(page)
     mobile = is_mobile(page)
 
     image_holder = ft.Container(
@@ -118,15 +116,12 @@ def build_profile_block(page: ft.Page) -> ft.Control:
                 horizontal=BUBBLE_PAD_X,
                 vertical=BUBBLE_PAD_Y,
             ),
-            border_radius=10,
+            border_radius=4,
             bgcolor=bg,
-            border=ft.Border.all(
-                1, ft.Colors.with_opacity(0.35, fg)
-            ),
             content=ui_text(
                 BUBBLE_TEXT,
                 size=BUBBLE_SIZE,
-                color=fg,
+                color=tip_fg,
                 no_wrap=True,
                 max_lines=1,
                 overflow=ft.TextOverflow.VISIBLE,

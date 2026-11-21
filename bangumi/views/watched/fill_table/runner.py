@@ -14,8 +14,18 @@ from bangumi.ui.tag_colors import sync_tag_colors
 from bangumi.ui.theme import ui_text
 from bangumi.ui.feedback import close_dialog
 from bangumi.data.watched_data import save_records
+from bangumi.data.preferences import Preferences
 from bangumi.views.watched.fill_table.constants import FILL_FIELDS
-from bangumi.views.watched.fill_table.fields import fields_complete, needs_fill, text, info_text, has_cover
+from bangumi.views.watched.fill_table.fields import (
+    field_text,
+    fields_complete,
+    has_cover,
+    info_text,
+    info_value,
+    needs_fill,
+    text,
+)
+from bangumi.views.watched.fill_table.apply import apply_info_field
 from bangumi.views.watched.fill_table.log import append_log, log_failure, reset_log
 from bangumi.views.watched.fill_table.progress import ticker
 from bangumi.views.watched.fill_table.result import (
@@ -54,7 +64,7 @@ def _start_fill(
     if total == 0:
         notice = ft.AlertDialog(
             modal=True,
-            title=ui_text("从Bangumi填充表格"),
+            title=ui_text("从 Bangumi 填充表格"),
             content=ui_text("没什么需要导入的呢"),
             actions=[],
         )
@@ -196,7 +206,9 @@ async def _run_fill(
     fail_label: ft.Text,
 ) -> None:
     page = owner.page
-    fixed = set(owner.preferences.fixed_columns)
+    # 每次开始填充时重新读取，避免使用页面创建时的旧配置。
+    preferences = Preferences.load()
+    fixed = set(preferences.fixed_columns)
     records = owner.records
     total = sum(
         1 for record in records
@@ -211,7 +223,8 @@ async def _run_fill(
 
     def refresh_progress(anime: str) -> None:
         done = int(state["done"])
-        status.value = ""
+        # 清空 value 让 spans 生效。
+        status.value = None
         status.spans = [
             ft.TextSpan("正在导入"),
             ft.TextSpan(
@@ -224,9 +237,13 @@ async def _run_fill(
         cho_label.value = f"{int(state['cho'])}待手动选择"
         fail_label.value = f"{int(state['fail'])}导入失败"
         try:
-            page.update(progress, cho_label, fail_label)
+            # status 使用 spans 渲染，必须一起下发，否则进度文字不刷新。
+            page.update(status, progress, cho_label, fail_label)
         except Exception:
-            page.update()
+            try:
+                page.update()
+            except Exception:
+                pass
 
     for index, record in enumerate(records):
         if owner._fill_abort:
@@ -368,7 +385,10 @@ async def _run_fill(
                 if owner._fill_abort:
                     return
                 returned = {
-                    field: info_text(field, info.get(key))
+                    field: info_text(
+                        field,
+                        info_value(info, field, key),
+                    )
                     for field, key in FILL_FIELDS
                 }
                 if info and not any(returned.values()):
@@ -404,20 +424,20 @@ async def _run_fill(
                         record["anime"] = info_name
                 if force:
                     for field, key in FILL_FIELDS:
-                        if key in fixed:
+                        if field in fixed:
                             continue
-                        record[field] = returned[field]
+                        apply_info_field(record, field, info, key)
                         if returned[field]:
                             filled_fields.append(key)
                 else:
                     for field, key in FILL_FIELDS:
-                        if key in fixed:
+                        if field in fixed:
                             continue
-                        if text(record.get(field)):
+                        if field_text(record, field):
                             continue
                         value = returned[field]
                         if value:
-                            record[field] = value
+                            apply_info_field(record, field, info, key)
                             filled_fields.append(key)
 
             if with_covers and (force or not has_cover(record)):

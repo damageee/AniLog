@@ -21,6 +21,7 @@ from bangumi.data.watched_data import (
     RECORD_FIELDS,
     WATCHED_COLUMNS,
     Record,
+    normalize_staff,
     split_tags,
 )
 
@@ -92,6 +93,9 @@ def import_records(
                 record[field] = row[field]
         record["sequel"] = row_is_red
         record["bgm_id"] = to_bgm_id(row.get("bgm_id"))
+        record["staff"] = normalize_staff(
+            row.get("staff") or row.get("author") or ""
+        )
         record["entry"] = (
             row.get("entry")
             or row.get("main_entry")
@@ -401,6 +405,8 @@ def _map_import_headers(headers: list[str]) -> dict[str, int]:
         "bangumi页面id": "bgm_id",
         "bgm_id": "bgm_id",
         "bangumi id": "bgm_id",
+        "作者": "staff",
+        "author": "staff",
     }
     mapped: dict[str, int] = {}
     for index, header in enumerate(headers):
@@ -459,6 +465,9 @@ def _expand_branch_row(
         )
         for field, lines in details.items():
             record[field] = lines[index]
+        record["staff"] = normalize_staff(
+            row.get("staff") or row.get("author") or ""
+        )
         record["entry"] = (
             row.get("main_entry")
             or row.get("entry")

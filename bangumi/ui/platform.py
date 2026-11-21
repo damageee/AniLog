@@ -23,13 +23,6 @@ def is_compact(page: ft.Page) -> bool:
     return float(width) < COMPACT_WIDTH
 
 
-def is_android(page: ft.Page) -> bool:
-    return page.platform in (
-        ft.PagePlatform.ANDROID,
-        ft.PagePlatform.ANDROID_TV,
-    )
-
-
 def is_desktop(page: ft.Page) -> bool:
     return not is_mobile(page)
 

@@ -12,7 +12,6 @@ from bangumi.ui.layout import (
     vertical_page,
 )
 from .quarter import (
-    _open_quarter_grid,
     quarter_view,
 )
 from bangumi.views.statistics.common.shared import (
@@ -44,13 +43,6 @@ def broadcast_view(page: ft.Page) -> ft.View:
                 page,
                 quarter_view,
             ),
-        ),
-        ft.Button(
-            content=ui_text("年×季度", size=18),
-            style=ft.ButtonStyle(
-                text_style=ui_text_style(size=18)
-            ),
-            on_click=lambda event: _open_quarter_grid(page),
         ),
     ]
     view = ft.View(

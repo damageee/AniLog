@@ -61,7 +61,7 @@ from bangumi.data.watched_data import (
     STUDIO_SEPARATOR,
     Record,
     load_records,
-    split_authors,
+    normalize_staff,
     split_studios,
     split_tags,
 )
@@ -73,12 +73,13 @@ CHOOSE_DATE = "选择日期"
 CHOOSE_CATEGORY = "选择类型"
 HINT_ENTRY = "原作/动画名称"
 HINT_ANIME = "动画名称"
-HINT_AUTHOR = "原作/导演/编剧/系列构成/脚本..."
+HINT_STAFF_KEY = "职务（如 导演/原作）"
+HINT_STAFF_VALUE = "姓名"
 HINT_STUDIO = "制作公司"
 HINT_SPEC = "动画长度"
 HINT_RATING = "0~100"
 HINT_TAG = "标签"
-HINT_ROLE = "角色"
+HINT_ROLE = "角色（越靠前越重要）"
 HINT_CV = "声优"
 HINT_REMARK = (
     "你小子给我听好了，青子可不是“喜欢”这个词可以形容的。"
@@ -138,15 +139,14 @@ def _fetch_bgm_info(
     subject_id: int,
     original_name: str,
     fixed: set[str],
-    editing: bool,
 ) -> dict[str, object]:
     """仅合并表单实际会用到的接口数据。"""
     info = get_subject_info(subject_id, original_name)
     if str(info.get("error") or "").strip():
         return info
-    if not (editing and "author" in fixed and "studio" in fixed):
+    if not ("staff" in fixed and "studio" in fixed):
         info = {**info, **get_persons(subject_id)}
-    if not (editing and "role" in fixed):
+    if "role" not in fixed:
         info = {**info, **get_characters(subject_id)}
     return info
 
@@ -252,7 +252,6 @@ class EntryForm:
         self.anime_field.on_submit = (
             lambda event: self._commit_anime_search(event, force=True)
         )
-        self.author_field = self._text_field(hint_text=HINT_AUTHOR)
         self.score_field = self._text_field(hint_text=HINT_RATING)
         self.score_field.input_filter = ft.NumbersOnlyInputFilter()
         self.score_field.on_change = self._clamp_score
@@ -303,6 +302,13 @@ class EntryForm:
         self._rebuild_text_list(
             self.studio_fields, self.studio_column, self._add_studio
         )
+
+        # STAFF: (职务, 姓名) pairs.
+        self.staff_pairs: list[tuple[ft.TextField, ft.TextField]] = [
+            self._new_staff_pair()
+        ]
+        self.staff_column = ft.Column(spacing=ROW_SPACING)
+        self._rebuild_staff()
 
         # 角色: (角色名, 声优) pairs.
         self.role_pairs: list[tuple[ft.TextField, ft.TextField]] = [
@@ -381,7 +387,16 @@ class EntryForm:
         self._entry_auto = False
         self.former_name = str(record.get("former_name") or "")
         self._refresh_former_name_label()
-        self.author_field.value = str(record.get("author") or "")
+        staff = normalize_staff(record.get("staff"))
+        self.staff_pairs = []
+        for key, value in staff.items():
+            key_field, value_field = self._new_staff_pair()
+            key_field.value = key
+            value_field.value = value
+            self.staff_pairs.append((key_field, value_field))
+        if not self.staff_pairs:
+            self.staff_pairs = [self._new_staff_pair()]
+        self._rebuild_staff()
         self.spec_field.value = str(record.get("specification") or "")
         self.score_field.value = _clamp_score_text(
             str(record.get("rating") or "")
@@ -424,7 +439,7 @@ class EntryForm:
             name_field = self._text_field(hint_text=HINT_ROLE)
             cv_field = self._text_field(hint_text=HINT_CV)
             name_field.value = name
-            cv_field.value = "/".join(cvs)
+            cv_field.value = "/".join(cvs) if cvs else "无"
             self.role_pairs.append((name_field, cv_field))
         if not self.role_pairs:
             self.role_pairs = [
@@ -782,6 +797,65 @@ class EntryForm:
             cv_field.value = ""
         self._rebuild_role()
         self.role_column.update()
+
+    # ------------------------------------------------------------------
+    # STAFF pairs
+    # ------------------------------------------------------------------
+
+    def _new_staff_pair(
+        self,
+    ) -> tuple[ft.TextField, ft.TextField]:
+        return (
+            self._text_field(hint_text=HINT_STAFF_KEY),
+            self._text_field(hint_text=HINT_STAFF_VALUE),
+        )
+
+    def _rebuild_staff(self) -> None:
+        rows: list[ft.Control] = []
+        last_index = len(self.staff_pairs) - 1
+        for index, (key_field, value_field) in enumerate(
+            self.staff_pairs
+        ):
+            key_field.expand = True
+            value_field.expand = True
+            controls: list[ft.Control] = [
+                key_field,
+                value_field,
+                self._remove_icon(
+                    lambda event, i=index: self._remove_staff(i)
+                ),
+            ]
+            if index == last_index:
+                controls.append(self._add_icon(self._add_staff))
+            rows.append(
+                ft.Row(
+                    spacing=ROW_SPACING,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=controls,
+                )
+            )
+        self.staff_column.controls = rows
+
+    def _add_staff(
+        self, event: ft.ControlEvent | None = None
+    ) -> None:
+        self.staff_pairs.append(self._new_staff_pair())
+        self._rebuild_staff()
+        self.staff_column.update()
+
+    def _remove_staff(self, index: int) -> None:
+        if len(self.staff_pairs) > 1:
+            self.staff_pairs.pop(index)
+        else:
+            key_field, value_field = self.staff_pairs[0]
+            key_field.value = ""
+            value_field.value = ""
+        self._rebuild_staff()
+        self.staff_column.update()
+
+    def _reset_staff_pairs(self) -> None:
+        self.staff_pairs = [self._new_staff_pair()]
+        self._rebuild_staff()
 
     # ------------------------------------------------------------------
     # 放送 rows (point / range)
@@ -1530,6 +1604,9 @@ class EntryForm:
         finally:
             self._suppress_anime_change = False
         self._anime_dirty = False
+        # 条目为空时按「动画首词」自动生成，并保持自动跟随。
+        if not (self.entry_field.value or "").strip():
+            self._entry_auto = True
         self._sync_entry_from_anime()
         self._refresh_former_name_label()
         if isinstance(subject_id, int):
@@ -1587,13 +1664,12 @@ class EntryForm:
                 subject_id,
                 (self.anime_field.value or "").strip(),
                 set(self.preferences.fixed_columns),
-                self.original_record is not None,
             )
             if token != self._bgm_detail_token:
                 return
             if not is_attached(self.bgm_results):
                 return
-            self._apply_bgm_info(info)
+            self._apply_bgm_info(info, overwrite=True)
         finally:
             if token == self._bgm_detail_token:
                 self._hide_bgm_loading()
@@ -1605,10 +1681,9 @@ class EntryForm:
         overwrite: bool = False,
     ) -> None:
         fixed = set(self.preferences.fixed_columns)
-        editing = self.original_record is not None
 
         def allowed(key: str) -> bool:
-            return not (editing and key in fixed)
+            return key not in fixed
 
         spec = str(info.get("规格") or "").strip()
         if allowed("specification") and spec and (
@@ -1623,14 +1698,26 @@ class EntryForm:
             self.category_value = category
             self.category_label.value = category
 
-        author = "、".join(
-            split_authors(str(info.get("作者") or ""))
-        )
-        if allowed("author") and author and (
-            overwrite
-            or not str(self.author_field.value or "").strip()
-        ):
-            self.author_field.value = author
+        staff_info = info.get("STAFF")
+        if allowed("staff") and isinstance(staff_info, dict):
+            current_has = any(
+                str(key.value or "").strip()
+                or str(value.value or "").strip()
+                for key, value in self.staff_pairs
+            )
+            if overwrite or not current_has:
+                # 按字典顺序重建键值对。
+                self.staff_pairs = []
+                for key, value in staff_info.items():
+                    key_field, value_field = self._new_staff_pair()
+                    key_field.value = str(key)
+                    value_field.value = str(value)
+                    self.staff_pairs.append(
+                        (key_field, value_field)
+                    )
+                if not self.staff_pairs:
+                    self.staff_pairs = [self._new_staff_pair()]
+                self._rebuild_staff()
 
         rating = info.get("评分")
         if allowed("rating") and isinstance(rating, int) and not isinstance(rating, bool):
@@ -1685,20 +1772,11 @@ class EntryForm:
             )
 
         role_text = str(info.get("角色") or "").strip()
-        pairs: list[tuple[str, list[str]]] = []
-        for line in role_text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            name = line
-            cv = ""
-            if line.endswith(")") and "(" in line:
-                index = line.rfind("(")
-                if index > 0:
-                    name = line[:index].strip()
-                    cv = line[index + 1 : -1].strip()
-            if name:
-                pairs.append((name, [cv] if cv else []))
+        pairs: list[tuple[str, list[str]]] = [
+            (name, cvs)
+            for name, cvs in parse_roles(role_text)
+            if name
+        ]
         existing_roles = any(
             str(name_field.value or "").strip()
             or str(cv_field.value or "").strip()
@@ -1710,7 +1788,7 @@ class EntryForm:
                 name_field = self._text_field(hint_text=HINT_ROLE)
                 cv_field = self._text_field(hint_text=HINT_CV)
                 name_field.value = name
-                cv_field.value = "/".join(cvs)
+                cv_field.value = "/".join(cvs) if cvs else "无"
                 self.role_pairs.append((name_field, cv_field))
             self._rebuild_role()
 
@@ -1842,8 +1920,15 @@ class EntryForm:
                 subject_id,
                 (self.anime_field.value or "").strip(),
                 set(self.preferences.fixed_columns),
-                self.original_record is not None,
             )
+        except Exception as exc:
+            # 网络/解析异常统一给出弹窗反馈。
+            show_error_dialog(
+                self.page,
+                title="获取失败",
+                message=f"网络请求失败：{exc}",
+            )
+            return
         finally:
             self._hide_bgm_loading()
         error = str(info.get("error") or "").strip()
@@ -1858,14 +1943,19 @@ class EntryForm:
             "规格",
             "类型",
             "TAG",
-            "作者",
+            "STAFF",
             "制作公司",
             "放送",
             "角色",
             "评分",
         )
         if not any(
-            str(info.get(key) or "").strip() for key in fields
+            (
+                bool(value)
+                if isinstance(value, dict)
+                else str(value or "").strip()
+            )
+            for value in (info.get(key) for key in fields)
         ):
             show_error_dialog(
                 self.page,
@@ -1899,6 +1989,7 @@ class EntryForm:
         self._apply_bgm_info(info, overwrite=True)
         self._refresh_former_name_label()
         self._refresh_cover_buttons()
+        show_toast(self.page, "导入成功")
 
     def _cover_exists(self) -> bool:
         return has_cover(self.bgm_id)
@@ -2044,12 +2135,12 @@ class EntryForm:
             self._field("动画", self.anime_field, key="anime"),
             self.former_name_container,
             self.bgm_results,
-            self._field("作者", self.author_field, key="author"),
             self._field("制作公司", self.studio_column, key="studio"),
             self._field("类型", self.category_button),
             self._field("规格", self.spec_block, key="spec"),
             self._field("TAG", self.tag_column, key="tag"),
             self._field("放送", self.broadcast_column),
+            self._field("STAFF", self.staff_column, key="staff"),
             self._field("角色", self.role_column, key="role"),
             self._field("评分", self.score_field, key="score"),
             self._field("补完", self.completion_block),
@@ -2132,12 +2223,13 @@ class EntryForm:
         fields = [
             self.entry_field,
             self.anime_field,
-            self.author_field,
             self.spec_field,
             self.score_field,
         ]
         fields.extend(self.tag_fields)
         fields.extend(self.studio_fields)
+        for key_field, value_field in self.staff_pairs:
+            fields.extend([key_field, value_field])
         for name_field, cv_field in self.role_pairs:
             fields.extend([name_field, cv_field])
         return fields
@@ -2216,12 +2308,26 @@ class EntryForm:
         for field in invalid:
             self._mark_invalid(field)
 
+    def _validate_staff(self, limit: int) -> None:
+        invalid: list[ft.TextField] = []
+        for key_field, _value_field in self.staff_pairs:
+            # 只校验职务（第一个输入框），姓名不限制长度。
+            if len((key_field.value or "").strip()) > limit:
+                invalid.append(key_field)
+        if not invalid:
+            return
+        self._show_error(
+            "staff", f"STAFF 职务不能超过{limit}个字符"
+        )
+        for field in invalid:
+            self._mark_invalid(field)
+
     def _validate(self) -> None:
         self._validate_required("entry", self.entry_field, "条目", 100)
         self._validate_required("anime", self.anime_field, "动画", 100)
-        self._validate_length("author", self.author_field, "作者", 100)
         self._validate_length("spec", self.spec_field, "规格", 100)
         self._validate_length("score", self.score_field, "评分", 100)
+        self._validate_staff(100)
         self._validate_lines(
             "tag",
             self.tag_fields,
@@ -2247,9 +2353,13 @@ class EntryForm:
             self.spec_field.value or ""
         ).strip()
         record["category"] = self.category_value
-        record["author"] = "、".join(
-            split_authors(self.author_field.value or "")
-        )
+        staff: dict[str, str] = {}
+        for key_field, value_field in self.staff_pairs:
+            key = str(key_field.value or "").strip()
+            value = str(value_field.value or "").strip()
+            if key and value:
+                staff[key] = value
+        record["staff"] = staff
         record["rating"] = _clamp_score_text(
             (self.score_field.value or "").strip()
         )
@@ -2322,6 +2432,11 @@ class EntryForm:
         self._reset_validation()
         self._validate()
         if any(error.visible for error in self.error_labels.values()):
+            show_toast(
+                self.page,
+                "请检查表单内容是否合规",
+                error=True,
+            )
             self.page.update(*self.error_labels.values())
             return
 
@@ -2350,9 +2465,71 @@ class EntryForm:
                     pass
         self._pending_cover_delete = None
 
+        # 保存成功后：有 Bangumi ID 且本地还没有封面时，询问是否缓存。
+        if final_id != -1 and not has_cover(final_id):
+            self._ask_cache_cover(final_id)
+            return
+        self._close_after_save()
+
+    def _close_after_save(self) -> None:
+        """保存成功后的关闭动作（原 _confirm 末尾逻辑）。"""
         if self.page.views:
             self.page.views.pop()
         self.page.update()
+
+    def _ask_cache_cover(self, subject_id: int) -> None:
+        """询问是否缓存封面；只问一次。"""
+        def cancel(event=None) -> None:
+            self.page.pop_dialog()
+            self._close_after_save()
+
+        def confirm(event=None) -> None:
+            self.page.pop_dialog()
+            self._close_after_save()
+            self.page.run_task(self._cache_cover_task, subject_id)
+
+        self.page.show_dialog(
+            ft.AlertDialog(
+                title=ui_text("封面图"),
+                content=ui_text("是否缓存封面图？", size=13),
+                actions=[
+                    ft.TextButton(
+                        content=ui_text("取消"),
+                        on_click=cancel,
+                    ),
+                    ft.Button(
+                        content=ui_text("缓存"),
+                        on_click=confirm,
+                    ),
+                ],
+            )
+        )
+
+    async def _cache_cover_task(self, subject_id: int) -> None:
+        """后台缓存封面；表单页已关闭，提示走 page 级 overlay。"""
+        self._show_bgm_loading()
+        try:
+            path = await asyncio.to_thread(
+                save_subject_image,
+                subject_id,
+            )
+        except Exception as exc:
+            show_error_dialog(
+                self.page,
+                title="封面图",
+                message=f"缓存封面失败：{exc}",
+            )
+            return
+        finally:
+            self._hide_bgm_loading()
+        if path is None:
+            show_error_dialog(
+                self.page,
+                title="封面图",
+                message="缓存封面失败：没有拿到图片",
+            )
+            return
+        show_toast(self.page, "封面图缓存成功")
 
     def _request_delete(self, event: ft.ControlEvent) -> None:
         self.page.show_dialog(
@@ -2391,8 +2568,8 @@ class EntryForm:
         def should_clear(key: str) -> bool:
             return clear_all or key not in fixed
 
-        if should_clear("author"):
-            self.author_field.value = ""
+        if should_clear("staff"):
+            self._reset_staff_pairs()
         if should_clear("specification"):
             self.spec_field.value = ""
         if should_clear("rating"):
@@ -2440,7 +2617,7 @@ class EntryForm:
         if old_id != -1:
             self._pending_cover_delete = old_id
         self.bgm_id = -1
-        self.author_field.value = ""
+        self._reset_staff_pairs()
         self.spec_field.value = ""
         self.score_field.value = ""
         self.remark_field.value = ""
@@ -2500,6 +2677,9 @@ def build_entry_form_view(
     record: Record | None = None,
     on_save: Callable[[Record], None] | None = None,
     on_delete: Callable[[], None] | None = None,
+    title: str = "条目",
+    prefill_anime: str | None = None,
+    auto_search: bool = False,
 ) -> ft.View:
     form = EntryForm(
         page,
@@ -2507,9 +2687,12 @@ def build_entry_form_view(
         on_save=on_save,
         on_delete=on_delete,
     )
-    return ft.View(
+    if prefill_anime:
+        form.anime_field.value = prefill_anime
+        form._anime_previous = prefill_anime
+    view = ft.View(
         route=ENTRY_FORM_ROUTE,
-        appbar=ft.AppBar(title=ui_text("条目")),
+        appbar=ft.AppBar(title=ui_text(title)),
         padding=page_padding(),
         controls=[
             vertical_page(
@@ -2529,6 +2712,13 @@ def build_entry_form_view(
             )
         ],
     )
+    if auto_search:
+        async def run() -> None:
+            await asyncio.sleep(0.05)
+            form._commit_anime_search(None, force=True)
+
+        page.run_task(run)
+    return view
 
 
 def open_entry_form(
@@ -2537,6 +2727,9 @@ def open_entry_form(
     record: Record | None = None,
     on_save: Callable[[Record], None] | None = None,
     on_delete: Callable[[], None] | None = None,
+    title: str = "条目",
+    prefill_anime: str | None = None,
+    auto_search: bool = False,
 ) -> None:
     """将条目表单压入视图栈，同时保留观影页。"""
     if page.views:
@@ -2551,5 +2744,8 @@ def open_entry_form(
             record=record,
             on_save=on_save,
             on_delete=on_delete,
+            title=title,
+            prefill_anime=prefill_anime,
+            auto_search=auto_search,
         ),
     )

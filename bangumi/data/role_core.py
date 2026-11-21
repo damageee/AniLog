@@ -6,22 +6,30 @@
 
 from __future__ import annotations
 
+import re
+
+_ROLE_PAREN = re.compile(r"^(.*?)[\(（]([^()（）]*)[\)）]\s*$")
+
 
 def parse_roles(value: str) -> list[tuple[str, list[str]]]:
-    """将一个单元格拆成 ``(name, cvs)`` 对。"""
+    """按换行拆分为 ``(name, cvs)`` 对，不再按空格拆分。"""
     roles: list[tuple[str, list[str]]] = []
-    for token in str(value or "").split():
-        opening = token.find("(")
-        if opening != -1 and token.endswith(")"):
-            name = token[:opening].strip()
-            cv_text = token[opening + 1 : -1]
+    for line in str(value or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        match = _ROLE_PAREN.match(text)
+        if match is not None:
+            name = match.group(1).strip()
+            cv_text = match.group(2)
         else:
-            name = token
+            # 没有括号时整行作为角色名。
+            name = text
             cv_text = ""
 
         cvs = [
             part.strip()
-            for part in cv_text.split("/")
+            for part in re.split(r"[/／]", cv_text)
             if part.strip()
         ]
         roles.append((name, cvs))
@@ -29,10 +37,19 @@ def parse_roles(value: str) -> list[tuple[str, list[str]]]:
 
 
 def first_role_name(value: str) -> str:
-    """仅返回第一个角色名，不含声优列表。"""
-    for name, _ in parse_roles(value):
-        if name:
-            return name
+    """返回首个非空行的角色名：去掉第一个括号及其后内容。"""
+    for line in str(value or "").splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        positions = [
+            index
+            for index in (text.find("("), text.find("（"))
+            if index != -1
+        ]
+        if positions:
+            text = text[: min(positions)]
+        return text.strip()
     return ""
 
 

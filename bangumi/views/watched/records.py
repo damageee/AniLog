@@ -14,6 +14,7 @@ from bangumi.ui.colors import (
     foreground_color,
 )
 from bangumi.views.general.entry_form import open_entry_form
+from bangumi.views.widgets.toast import show_toast
 from bangumi.ui.tag_colors import sync_tag_colors
 from bangumi.data.watched_data import (
     Record,
@@ -100,6 +101,27 @@ class RecordsMixin:
         else:
             self.refresh(reset_scroll=True, update_header=True)
         self._safe_prompt_watchlist_duplicates(record)
+        show_toast(self.page, "条目追加成功")
+
+    def _insert_record(self, index: int, record: Record) -> None:
+        """在指定位置插入记录（表格与 watched.json 顺序一致）。"""
+        updated = list(self.records)
+        position = max(0, min(index, len(updated)))
+        updated.insert(position, record)
+        if record.get("sequel") is True:
+            propagate_sequel(updated, entry_group_key(record), True)
+        save_records(updated)
+        self.records = updated
+        sync_tag_colors(self.records, self.preferences)
+        self.table_exists = True
+        # 保持当前页；新记录落在其它页时，刷新后按排序/分页规则显示。
+        if self.search_query:
+            self._resync_search(
+                reset_scroll=False, update_header=True
+            )
+        else:
+            self.refresh(restore_scroll=True, update_header=True)
+        show_toast(self.page, "条目插入成功")
 
     def _update_record(self, index: int, record: Record) -> None:
         old_record = (
@@ -126,6 +148,7 @@ class RecordsMixin:
             record,
         ):
             self._safe_prompt_watchlist_duplicates(record)
+        show_toast(self.page, "条目编辑成功")
 
     def _watchlist_fields_changed(
         self,
@@ -249,4 +272,5 @@ class RecordsMixin:
             self._resync_search(reset_scroll=True)
         else:
             self.refresh()
+        show_toast(self.page, "条目删除成功")
 

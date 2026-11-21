@@ -25,6 +25,7 @@ from bangumi.data.sorting import sort_detail_items
 from bangumi.views.templates.list_page import open_list_page
 from bangumi.views.statistics.common.overlays import (
     _PanelOverlay,
+    _attach_overlay_cleanup,
     _install_overlay_hook,
     _register_overlay,
     _ring_block,
@@ -308,6 +309,7 @@ def overview_view(page: ft.Page) -> ft.View:
     view.data = {
         "rebuild": lambda: overview_view(page)
     }
+    _attach_overlay_cleanup(view, overlay)
 
     animation_controls = [text for text, _ in animated] + [
         ring for ring, _ in rings

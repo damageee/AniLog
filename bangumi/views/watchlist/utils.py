@@ -39,7 +39,15 @@ def bilibili_import_file() -> Path:
 
 
 def load_bilibili_uid() -> str:
-    """返回上次成功使用的 UID；没有时返回空字符串。"""
+    """返回上次成功使用的 UID；优先读 preferences，旧文件作兜底。"""
+    try:
+        from bangumi.data.preferences import Preferences
+
+        uid = Preferences.load().bilibili_uid
+        if uid:
+            return uid
+    except Exception:
+        pass
     try:
         path = bilibili_import_file()
         if not path.is_file():
@@ -57,7 +65,16 @@ def load_bilibili_uid() -> str:
 
 
 def save_bilibili_uid(uid: str) -> None:
-    """尽力持久化；绝不中断导入流程。"""
+    """写入 preferences；失败时回退旧文件，绝不中断导入流程。"""
+    try:
+        from bangumi.data.preferences import Preferences
+
+        prefs = Preferences.load()
+        prefs.bilibili_uid = str(uid).strip()
+        prefs.save()
+        return
+    except Exception:
+        pass
     try:
         write_json(
             bilibili_import_file(),

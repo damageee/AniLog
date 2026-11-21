@@ -1,10 +1,11 @@
-"""季度与年×季度统计页。"""
+"""季度统计页。"""
 
 from __future__ import annotations
 
 import asyncio
 import random
 import time
+from types import SimpleNamespace
 from typing import (
     Callable,
 )
@@ -14,6 +15,7 @@ from bangumi.ui.theme import (
 )
 from bangumi.ui.interaction import (
     back_icon,
+    tooltip_colors,
 )
 from bangumi.ui.colors import (
     background_color,
@@ -25,9 +27,6 @@ from bangumi.views.navigation import (
 )
 from bangumi.ui.layout import (
     scroll_page,
-)
-from .year_quarter import (
-    build_quarter_view,
 )
 from bangumi.views.general.detail_quarter_works import (
     build_quarter_works_view,
@@ -49,6 +48,7 @@ from bangumi.views.statistics.common.overlays import (
     _install_overlay_hook,
     _overlay_placement,
     _quote_overlay,
+    _attach_overlay_cleanup,
     _register_overlay,
 )
 from bangumi.views.statistics.common.shared import (
@@ -147,9 +147,11 @@ def _heat_cell(
         page,
         cell,
         target=1.2,
-        on_tap=on_show,
+        on_tap=None,
+        pulse=True,
         initial_scale=1.4 if animate else 1.0,
     )
+    pulse_fn = getattr(cell, "pulse", None)
     if heat_cells is not None:
         heat_cells.append(cell)
 
@@ -159,18 +161,30 @@ def _heat_cell(
     def leave(event: ft.ControlEvent) -> None:
         on_hide(event)
 
-    return ft.GestureDetector(
+    def on_cell_tap(event: ft.ControlEvent) -> None:
+        # 先做缩放反馈；桌面端点击时立即隐藏已显示的提示。
+        if callable(pulse_fn):
+            pulse_fn()
+        if desktop:
+            on_hide(event)
+        on_open(event)
+
+    gesture = ft.GestureDetector(
         width=HEAT_SIZE,
         height=HEAT_SIZE,
-        on_enter=enter,
-        on_exit=leave,
-        on_tap=on_open,
-        on_long_press_start=on_long_start,
-        on_long_press_move_update=on_long_move,
-        on_long_press_end=on_long_end,
-        on_long_press_cancel=on_long_end,
+        on_tap=on_cell_tap,
         content=cell,
     )
+    if desktop:
+        gesture.on_enter = enter
+        gesture.on_exit = leave
+    else:
+        # 移动端：仅长按/滑动显示 tooltip。
+        gesture.on_long_press_start = on_long_start
+        gesture.on_long_press_move_update = on_long_move
+        gesture.on_long_press_end = on_long_end
+        gesture.on_long_press_cancel = on_long_end
+    return gesture
 
 
 def quarter_view(page: ft.Page) -> ft.View:
@@ -186,24 +200,16 @@ def quarter_view(page: ft.Page) -> ft.View:
     _register_overlay(page, overlay)
     _install_overlay_hook(page)
 
-    label_text = ui_text("", size=12, color=fg)
+    tip_bg, tip_fg = tooltip_colors(page)
+    label_text = ui_text("", size=12, color=tip_fg)
     label = ft.Container(
         width=180,
         height=34,
         alignment=ft.Alignment.CENTER,
         ignore_interactions=True,
         padding=ft.Padding.symmetric(horizontal=10, vertical=6),
-        border_radius=8,
-        bgcolor=background_color(page),
-        border=ft.Border.all(
-            1,
-            ft.Colors.with_opacity(0.25, accent),
-        ),
-        shadow=ft.BoxShadow(
-            blur_radius=10,
-            color=ft.Colors.with_opacity(0.2, ft.Colors.BLACK),
-            offset=ft.Offset(2, 4),
-        ),
+        border_radius=4,
+        bgcolor=ft.Colors.with_opacity(0.95, tip_bg),
         content=label_text,
     )
     state: dict[str, ft.Container | None] = {
@@ -262,17 +268,64 @@ def quarter_view(page: ft.Page) -> ft.View:
         if view is not None:
             push_view(page, view)
 
+    def cell_anchor(year: int | None, season: str) -> tuple[float, float]:
+        """无指针坐标时，按矩阵行列估算方块的页面中心。"""
+        years_list = list(data.range_years)
+        try:
+            row = (
+                years_list.index(year)
+                if year is not None
+                else len(years_list)
+            )
+        except ValueError:
+            row = 0
+        try:
+            col = SEASONS.index(season)
+        except ValueError:
+            col = 0
+        appbar = (
+            getattr(page.views[-1], "appbar", None)
+            if page.views
+            else None
+        )
+        appbar_h = float(getattr(appbar, "height", None) or 56.0)
+        x = 24.0 + 52.0 + 4.0 + col * (HEAT_SIZE + 4.0)
+        x += HEAT_SIZE / 2
+        y = appbar_h + 16.0 + 24.0 + 4.0
+        y += row * (HEAT_SIZE + 4.0) + HEAT_SIZE / 2
+        x = min(
+            max(x, 24.0),
+            max(24.0, float(page.width or 400) - 24.0),
+        )
+        y = min(
+            max(y, 24.0),
+            max(24.0, float(page.height or 800) - 24.0),
+        )
+        return x, y
+
     def show_cell(
         event: ft.ControlEvent,
         *,
         year: int | None,
         season: str,
         count: int,
+        anchor: tuple[float, float] | None = None,
     ) -> None:
         if view not in page.views or page.views[-1] is not view:
             return
         hide_token["value"] += 1
         x, y = event_position(event)
+        place_event = event
+        if x <= 0 and y <= 0:
+            # 移动端长按事件偶尔没有有效坐标：退回到方块中心。
+            if anchor is not None:
+                x, y = anchor
+            else:
+                x = float(page.width or 400) / 2
+                y = float(page.height or 800) / 2
+            place_event = SimpleNamespace(
+                global_position=SimpleNamespace(x=x, y=y)
+            )
         quote_text = random.choice(QUOTES[season])
         quote, quote_h = _quote_overlay(
             page,
@@ -285,7 +338,7 @@ def quarter_view(page: ft.Page) -> ft.View:
 
         pos = _overlay_placement(
             page,
-            event,
+            place_event,
             width=180,
             height=34,
             bottom_reserve=quote_h + 12,
@@ -347,7 +400,13 @@ def quarter_view(page: ft.Page) -> ft.View:
         season: str,
     ) -> None:
         count = len(data.matrix[(year, season)])
-        show_cell(event, year=year, season=season, count=count)
+        show_cell(
+            event,
+            year=year,
+            season=season,
+            count=count,
+            anchor=cell_anchor(year, season),
+        )
         current = active_heat["cell"]
         if current is not None:
             scale_heat(current, False)
@@ -516,6 +575,7 @@ def quarter_view(page: ft.Page) -> ft.View:
                                 year=y,
                                 season=s,
                                 count=c,
+                                anchor=cell_anchor(y, s),
                             )
                         )
                     ),
@@ -595,6 +655,7 @@ def quarter_view(page: ft.Page) -> ft.View:
                         year=None,
                         season=s,
                         count=c,
+                        anchor=cell_anchor(None, s),
                     )
                 ),
                 on_hide=(
@@ -691,35 +752,7 @@ def quarter_view(page: ft.Page) -> ft.View:
             heat_cells,
             seconds=ANIMATION_SECONDS,
         )
+    _attach_overlay_cleanup(view, overlay)
     return view
-
-
-def _open_quarter_grid(page: ft.Page) -> None:
-    route = "/statistics/broadcast/year-quarter"
-    if page.views and getattr(page.views[-1], "route", "") == route:
-        return
-    records = load_records()
-    view = build_quarter_view(
-        page,
-        records,
-        records[0] if records else {},
-        route,
-    )
-
-    def back(event: ft.ControlEvent) -> None:
-        go_back(
-            page,
-            route,
-            lambda: _hide_page_overlay(page),
-        )
-
-    if view.appbar is not None:
-        view.appbar.automatically_imply_leading = False
-        view.appbar.leading = back_icon(
-            page,
-            route,
-            before=lambda: _hide_page_overlay(page),
-        )
-    push_view(page, view)
 
 

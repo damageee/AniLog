@@ -9,15 +9,24 @@ def page_padding() -> ft.Padding:
     return ft.Padding.symmetric(horizontal=24, vertical=16)
 
 
+# 右侧滚动条预留宽度。
+SCROLLBAR_WIDTH = 26.0
+
+
 def chart_width(
     page: ft.Page,
     default_width: float,
     *,
-    extra_right: float = 16.0,
+    # 16 为原安全边距，18 留给右侧滚动条。
+    extra_right: float = SCROLLBAR_WIDTH + 16.0,
     min_width: float = 120.0,
 ) -> float:
     usable = float(page.width or 1000) - 48 - extra_right
-    return max(min_width, min(float(default_width), usable))
+    fitted = min(float(default_width), usable)
+    if fitted >= min_width:
+        return fitted
+    # 极窄时允许低于 min_width，避免右侧被裁。
+    return max(60.0, fitted)
 
 
 def scroll_page(

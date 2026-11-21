@@ -7,9 +7,12 @@ import statistics as stats_lib
 import flet as ft
 
 from bangumi.data.watched_data import load_records
-from bangumi.ui.colors import background_color, foreground_color
+from bangumi.ui.colors import foreground_color
 from bangumi.ui.events import is_hover
+from bangumi.ui.interaction import tooltip_colors
 from bangumi.ui.layout import vertical_page
+from bangumi.ui import scroll_memory
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.ui.heat_zoom import animate_heat_cells
 from bangumi.ui.anim import (
     animation,
@@ -17,6 +20,7 @@ from bangumi.ui.anim import (
 )
 from bangumi.ui.page_state import first_entry, mark_seen
 from bangumi.ui.theme import ui_text
+from bangumi.ui.text_metrics import text_width
 from bangumi.data.statistics.studios_honor import (
     _company_color,
     _honor_group,
@@ -105,16 +109,40 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
             else 0.0
         )
         grid = ft.Colors.with_opacity(0.25, fg)
+        tip_bg, tip_fg = tooltip_colors(page)
         info_label = ft.Container(
             visible=False,
             left=8.0,
             top=8.0,
             ignore_interactions=True,
-            padding=6,
-            border_radius=6,
-            bgcolor=background_color(page),
-            content=ui_text("", size=11, color=fg),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+            border_radius=4,
+            bgcolor=ft.Colors.with_opacity(0.95, tip_bg),
+            content=ui_text("", size=12, color=tip_fg),
         )
+
+        def place_info(
+            text: str,
+            left_value: float,
+            top_value: float,
+        ) -> None:
+            label_w = max(60.0, text_width(text, size=12) + 24)
+            info_label.width = label_w
+            info_label.content = ui_text(
+                text,
+                size=12,
+                color=tip_fg,
+                no_wrap=True,
+            )
+            info_label.left = min(
+                max(8.0, float(left_value) - 40),
+                max(8.0, chart_width - label_w - 8),
+            )
+            info_label.top = min(
+                max(8.0, float(top_value) - 30),
+                max(8.0, height - 44),
+            )
+            info_label.visible = True
         controls: list[ft.Control] = [
             ft.Container(
                 left=left,
@@ -142,7 +170,16 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
             ),
         ]
         dot_points: list[
-            tuple[float, float, str, float, int, ft.Container]
+            tuple[
+                float,
+                float,
+                float,
+                float,
+                str,
+                float,
+                int,
+                ft.Container,
+            ]
         ] = []
         active_dot: dict[str, ft.Container | None] = {"dot": None}
 
@@ -151,6 +188,8 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
             studio_name: str,
             average: float,
             samples: int,
+            left: float,
+            top: float,
         ) -> None:
             previous = active_dot["dot"]
             if previous is not None and previous is not target:
@@ -159,21 +198,12 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
                     previous.update()
                 except Exception:
                     pass
-            info_label.content = ui_text(
+            place_info(
                 f"{studio_name} | 均分: "
                 f"{average:.2f} ({samples}部)",
-                size=11,
-                color=fg,
+                left,
+                top,
             )
-            info_label.left = max(
-                8.0,
-                float(target.left or 0) - 40,
-            )
-            info_label.top = max(
-                8.0,
-                float(target.top or 0) - 30,
-            )
-            info_label.visible = True
             target.scale = ft.Scale(1.2)
             active_dot["dot"] = target
             try:
@@ -221,6 +251,8 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
             for (
                 px_value,
                 py_value,
+                left_value,
+                top_value,
                 studio_name,
                 average,
                 samples,
@@ -237,6 +269,8 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
                         studio_name,
                         average,
                         samples,
+                        left_value,
+                        top_value,
                     )
             if nearest is not None and best < 40:
                 show_dot(*nearest)
@@ -246,9 +280,9 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
         for studio, works, avg, rated in points:
             diameter = 8 + (rated / max_rated) * 24
             radius = diameter / 2
+            left_pos = px(works) - radius
+            top_pos = py(avg) - radius
             dot = ft.Container(
-                left=px(works) - radius,
-                top=py(avg) - radius,
                 width=diameter,
                 height=diameter,
                 border_radius=radius,
@@ -274,6 +308,8 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
                 works_count=works,
                 average=avg,
                 samples=rated,
+                left_value=left_pos,
+                top_value=top_pos,
             ) -> None:
                 hovered = is_hover(event)
                 target.scale = (
@@ -286,21 +322,12 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
                 except Exception:
                     pass
                 if hovered:
-                    info_label.content = ui_text(
+                    place_info(
                         f"{studio_name} | 均分: "
                         f"{average:.2f} ({samples}部)",
-                        size=11,
-                        color=fg,
+                        left_value,
+                        top_value,
                     )
-                    info_label.left = max(
-                        8.0,
-                        float(target.left or 0) - 40,
-                    )
-                    info_label.top = max(
-                        8.0,
-                        float(target.top or 0) - 30,
-                    )
-                    info_label.visible = True
                 else:
                     info_label.visible = False
                 info_label.update()
@@ -324,6 +351,8 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
                 (
                     px(works),
                     py(avg),
+                    left_pos,
+                    top_pos,
                     studio,
                     avg,
                     rated,
@@ -331,9 +360,13 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
                 )
             )
             gesture = ft.GestureDetector(
+                left=left_pos,
+                top=top_pos,
+                width=diameter,
+                height=diameter,
                 on_long_press_start=(
-                    lambda event, d=dot, s=studio, a=avg, r=rated: (
-                        show_dot(d, s, a, r)
+                    lambda event, d=dot, s=studio, a=avg, r=rated, l=left_pos, t=top_pos: (
+                        show_dot(d, s, a, r, l, t)
                     )
                 ),
                 on_long_press_move_update=(
@@ -451,25 +484,39 @@ def studio_scatter_view(page: ft.Page) -> ft.View:
     state["view"].data = {
         "rebuild": lambda: studio_scatter_view(page)
     }
-    previous_resize = page.on_resize
-
     def on_resize(event: ft.ControlEvent) -> None:
-        current = state["view"]
-        if current is not None and current in page.views:
-            if page.views[-1] is current:
-                index = page.views.index(current)
-                new_view = build_view(entry_animation=False)
-                page.views[index] = new_view
-                state["view"] = new_view
-                try:
-                    page.update()
-                except RuntimeError:
-                    return
+        # 按 route 判断栈顶，重建后仍能继续响应。
         if (
-            previous_resize is not None
-            and previous_resize is not on_resize
+            not page.views
+            or str(getattr(page.views[-1], "route", "")) != route
         ):
-            previous_resize(event)
+            return
+        view = state["view"]
+        if view is None or view not in page.views:
+            return
+        new_view = build_view(entry_animation=False)
+        # 复用旧视图与滚动容器，避免滚动条闪回。
+        if view.controls and new_view.controls:
+            old_column = view.controls[0]
+            new_column = new_view.controls[0]
+            try:
+                old_column.controls = new_column.controls
+            except Exception:
+                view.controls = new_view.controls
+        else:
+            view.controls = new_view.controls
+        view.appbar = new_view.appbar
+        view.padding = new_view.padding
+        if isinstance(new_view.data, dict):
+            view.data.update(new_view.data)
+        # 覆盖重建过程中可能注册的新 handler，保证后续 resize 继续执行。
+        register_resize_handler(page, route, on_resize)
+        page.update()
+        scroll_memory.schedule_restore(page)
 
-    page.on_resize = on_resize
+    register_resize_handler(
+        page,
+        "/statistics/studios/scatter",
+        on_resize,
+    )
     return state["view"]

@@ -7,12 +7,17 @@ from typing import Callable
 import flet as ft
 
 from bangumi.data.watched_data import Record, record_title
+from bangumi.data.ratings import parse_rating
 from bangumi.data.quarter_core import (
     earliest_broadcast_date,
     quarter_for_month,
 )
-from bangumi.views.navigation import QUARTER_WORKS, open_detail
-from bangumi.views.templates.list_page import build_list_view
+from bangumi.views.general.bar_chart import build_bar_chart_view
+from bangumi.views.navigation import (
+    ENTRY,
+    QUARTER_WORKS,
+    open_detail,
+)
 
 
 def _quarter_entries(records: list[Record]) -> list:
@@ -20,27 +25,6 @@ def _quarter_entries(records: list[Record]) -> list:
         (record_title(record), record)
         for record in records
     ]
-
-
-def build_quarter_records_view(
-    page: ft.Page,
-    *,
-    title: str,
-    route: str,
-    records: list[Record],
-    all_records: list[Record],
-    before: Callable[[], None] | None = None,
-    rebuild: Callable[[], ft.View] | None = None,
-) -> ft.View:
-    return build_list_view(
-        page,
-        title=title,
-        route=route,
-        entries=_quarter_entries(records),
-        records=all_records,
-        before=before,
-        rebuild=rebuild,
-    )
 
 
 def build_quarter_works_view(
@@ -76,13 +60,30 @@ def build_quarter_works_view(
         selected = rows
         if title is None:
             title = f"{date[0]}{season}季度"
-    return build_quarter_records_view(
+    # 横条竞赛：arr = 该季度所有作品的动画名与评分（无评分按 0）。
+    items = list(selected or [])
+    labels = [record_title(record) for record in items]
+    record_by_label = dict(zip(labels, items))
+
+    def click(label: str) -> None:
+        record = record_by_label.get(label)
+        if record is None:
+            return
+        if before is not None:
+            before()
+        open_detail(page, records, record, ENTRY)
+
+    return build_bar_chart_view(
         page,
+        [
+            (label, float(parse_rating(record.get("rating")) or 0))
+            for label, record in zip(labels, items)
+        ],
+        max_value=100.0,
         title=title or "",
         route=route,
-        records=selected,
-        all_records=records,
-        before=before,
+        decimals=0,
+        on_bar_click=click,
         rebuild=rebuild,
     )
 

@@ -87,7 +87,9 @@ async def restore(
     page: ft.Page,
     view: ft.View | None = None,
 ) -> None:
-    await asyncio.sleep(0.12)
+    # 立即尝试一次，让 scroll_to 紧跟页面 update 下发；
+    # 30ms 后再兜底一次，避免用户看到先回顶部再跳回。
+    await asyncio.sleep(0)
     prune(page)
     if not page.views:
         return
@@ -98,18 +100,21 @@ async def restore(
     records = _MEMORY.get(route)
     if not records:
         return
-    for record in tuple(records.values()):
-        control = record.get("control")
-        try:
-            offset = float(record.get("offset", 0) or 0)
-        except (TypeError, ValueError):
-            offset = 0.0
-        if offset <= 0 or not is_attached(control):
-            continue
-        try:
-            await control.scroll_to(offset=offset, duration=0)
-        except Exception:
-            pass
+    for attempt in range(2):
+        if attempt:
+            await asyncio.sleep(0.03)
+        for record in tuple(records.values()):
+            control = record.get("control")
+            try:
+                offset = float(record.get("offset", 0) or 0)
+            except (TypeError, ValueError):
+                offset = 0.0
+            if offset <= 0 or not is_attached(control):
+                continue
+            try:
+                await control.scroll_to(offset=offset, duration=0)
+            except Exception:
+                pass
 
 
 def schedule_restore(

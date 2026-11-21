@@ -3,30 +3,27 @@
 from __future__ import annotations
 
 from bangumi.data.role_core import parse_roles
-from bangumi.data.watched_data import Record, entry_group_key
+from bangumi.data.watched_data import Record
 
 
 def cast_statistics(
     records: list[Record],
 ) -> list[tuple[str, int, Record]]:
-    """按数量降序返回 ``(cv, unique_entry_count, sample_record)``。"""
-    entries: dict[str, set[str]] = {}
+    """按作品数降序返回 ``(cv, unique_work_count, sample_record)``。"""
+    works: dict[str, set[int]] = {}
     samples: dict[str, Record] = {}
-    for record in records:
-        key = entry_group_key(record)
-        if not key:
-            continue
+    for index, record in enumerate(records):
         text = str(record.get("role", "") or "")
         for _, cvs in parse_roles(text):
             for cv in cvs:
                 name = str(cv or "").strip()
                 if not name:
                     continue
-                entries.setdefault(name, set()).add(key)
+                works.setdefault(name, set()).add(index)
                 samples.setdefault(name, record)
     items = [
-        (name, len(keys), samples[name])
-        for name, keys in entries.items()
+        (name, len(indexes), samples[name])
+        for name, indexes in works.items()
     ]
     items.sort(key=lambda item: (-item[1], item[0]))
     return items

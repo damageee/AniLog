@@ -11,9 +11,9 @@ from bangumi.ui.theme import (
     ui_text,
 )
 from bangumi.ui.colors import (
-    background_color,
     foreground_color,
 )
+from bangumi.ui.interaction import tooltip_colors
 from bangumi.ui.events import event_position
 from bangumi.views.statistics.common.shared import (
     BOTTOM_SAFE_MARGIN,
@@ -107,6 +107,22 @@ class _OverlayLayers:
 _PAGE_OVERLAYS: dict[int, _PanelOverlay | _OverlayLayers] = {}
 
 
+def _attach_overlay_cleanup(view, overlay) -> None:
+    """给视图挂 on_close：离开栈时清理本页 overlay。"""
+    if view is None or overlay is None:
+        return
+    data = view.data if isinstance(view.data, dict) else {}
+
+    def _hide() -> None:
+        try:
+            overlay.hide()
+        except Exception:
+            pass
+
+    data["on_close"] = _hide
+    view.data = data
+
+
 def _register_overlay(
     page: ft.Page,
     overlay: _PanelOverlay | _OverlayLayers,
@@ -168,10 +184,6 @@ def _page_width(page: ft.Page) -> float:
 
 def _page_height(page: ft.Page) -> float:
     return float(page.height or 800)
-
-
-def _page_dimensions(page: ft.Page) -> tuple[float, float]:
-    return _page_width(page), _page_height(page)
 
 
 def _overlay_placement(
@@ -387,18 +399,6 @@ def _wrap_quote(value: str, max_width: int, *, size: int = 12) -> str:
     return "\n".join(lines)
 
 
-def _quote_metrics(page: ft.Page, quote: str) -> tuple[float, float]:
-    page_width = float(page.width or 900)
-    width = min(
-        max(220, int(page_width * 0.42)),
-        max(160, int(page_width) - 24),
-        440,
-    )
-    lines = _wrap_quote(quote, width - 24, size=12).count("\n") + 1
-    height = lines * 22 + 24
-    return float(width), float(height)
-
-
 def _quote_overlay(
     page: ft.Page,
     quote: str,
@@ -413,32 +413,20 @@ def _quote_overlay(
     )
     text = _wrap_quote(quote, width - 24, size=12)
     height = (text.count("\n") + 1) * 22 + 24
+    tip_bg, tip_fg = tooltip_colors(page)
     if panel is None:
         panel = ft.Container(
             left=12,
             bottom=12,
             width=width,
             ignore_interactions=True,
-            padding=ft.Padding.symmetric(horizontal=12, vertical=10),
-            border_radius=10,
-            bgcolor=background_color(page),
-            border=ft.Border.all(
-                1,
-                ft.Colors.with_opacity(
-                    0.2,
-                    foreground_color(page),
-                ),
-            ),
-            shadow=ft.BoxShadow(
-                blur_radius=12,
-                color=ft.Colors.with_opacity(0.22, ft.Colors.BLACK),
-                offset=ft.Offset(2, 4),
-            ),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+            border_radius=4,
+            bgcolor=ft.Colors.with_opacity(0.95, tip_bg),
             content=ui_text(
                 text,
                 size=12,
-                italic=True,
-                color=foreground_color(page),
+                color=tip_fg,
             ),
         )
     else:
@@ -449,8 +437,7 @@ def _quote_overlay(
             panel.content = ui_text(
                 text,
                 size=12,
-                italic=True,
-                color=foreground_color(page),
+                color=tip_fg,
             )
     return panel, float(height)
 

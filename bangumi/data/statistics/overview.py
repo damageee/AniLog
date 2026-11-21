@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from bangumi.data.watched_data import Record, load_records
 from .constants import CATEGORY_NAMES, _MINUTE_RE
 from .models import OverviewData
@@ -11,10 +13,45 @@ from .records import (
     _entry_items,
     _name,
     _record_item,
-    _spec_episodes,
     _specification,
     _sum_spec,
 )
+
+
+def _parse_specification(
+    specification: str,
+) -> dict[str, tuple[int, int]]:
+    """按 +/＋ 拆段，返回 {类型: (部数, 集数)}。"""
+    parts = [
+        part.strip()
+        for part in re.split(r"[+＋]", specification)
+        if part.strip()
+    ]
+    if not parts:
+        parts = [""]
+    result: dict[str, tuple[int, int]] = {}
+    for part in parts:
+        upper = part.upper()
+        if "OVA" in upper:
+            kind = "ova"
+        elif "OAD" in upper:
+            kind = "oad"
+        elif "SP" in upper:
+            kind = "sp"
+        elif "电影" in part or "剧场版" in part:
+            kind = "movie"
+        elif "分钟" in part:
+            kind = "movie"
+        else:
+            kind = "tv"
+        numbers = re.findall(r"\d+", part)
+        count = int(numbers[0]) if numbers else 0
+        previous = result.get(kind)
+        if previous is None:
+            result[kind] = (1, count)
+        else:
+            result[kind] = (previous[0], previous[1] + count)
+    return result
 
 
 def overview_data(records: list[Record] | None = None) -> OverviewData:
@@ -34,23 +71,26 @@ def overview_data(records: list[Record] | None = None) -> OverviewData:
     feature_records: list[Record] = []
     theater_records: list[Record] = []
     tv_episodes = 0
+    ova_episodes = 0
+    oad_episodes = 0
+    sp_episodes = 0
 
     for record in records:
         specification = _specification(record)
-        has_episode, episodes = _spec_episodes(specification)
-        upper = specification.upper()
-        if not specification:
+        parsed = _parse_specification(specification)
+        if "tv" in parsed:
             tv_records.append(record)
-        elif has_episode and episodes > 1:
-            tv_records.append(record)
-            tv_episodes += episodes
-        elif "OVA" in upper:
+            tv_episodes += parsed["tv"][1]
+        if "ova" in parsed:
             ova_records.append(record)
-        elif "OAD" in upper:
+            ova_episodes += parsed["ova"][1]
+        if "oad" in parsed:
             oad_records.append(record)
-        elif "SP" in upper:
+            oad_episodes += parsed["oad"][1]
+        if "sp" in parsed:
             sp_records.append(record)
-        elif "分钟" in specification:
+            sp_episodes += parsed["sp"][1]
+        if "movie" in parsed:
             if "剧场版" in _name(record):
                 theater_records.append(record)
             else:
@@ -85,8 +125,11 @@ def overview_data(records: list[Record] | None = None) -> OverviewData:
         tv_count=len(tv_records),
         tv_episodes=tv_episodes,
         ova_count=len(ova_records),
+        ova_episodes=ova_episodes,
         oad_count=len(oad_records),
+        oad_episodes=oad_episodes,
         sp_count=len(sp_records),
+        sp_episodes=sp_episodes,
         movie_count=len(movie_records),
         movie_minutes=_sum_spec(movie_records, _MINUTE_RE),
         feature_count=len(feature_records),

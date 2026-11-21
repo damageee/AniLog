@@ -11,6 +11,8 @@ import pykakasi
 from pykakasi.kanji import Itaiji, Kanwa
 from pypinyin import Style, pinyin
 
+from bangumi.core.text_variants import fold_variants, variant_forms
+
 _KAKASI = pykakasi.kakasi()
 _KATAKANA_WORD_RE = re.compile(r"[\u30a0-\u30ffー・]+")
 _KANA_RE = re.compile(r"[\u3040-\u30ff]+")
@@ -79,28 +81,44 @@ def _kana_unify(value: str) -> str:
 @lru_cache(maxsize=8192)
 def _kanji_readings(char: str) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", char)
-    char = _VARIANT_KANJI.get(normalized, normalized)
-    table = Kanwa().load(char)
-    entries = (table.get(char) or []) if table else []
-    if not entries:
-        converted = Itaiji().convert(char)
-        if converted and converted != char:
-            return _kanji_readings(converted)
-        return ()
-    values: list[str] = []
-    for yomi, _condition in entries:
-        romaji = _normalize_romaji(
-            "".join(
-                item.get("hepburn", "")
-                for item in _KAKASI.convert(str(yomi))
-            )
-        )
-        if not romaji:
+    candidates: list[str] = []
+    for candidate in (
+        normalized,
+        fold_variants(normalized),
+        *variant_forms(normalized),
+    ):
+        mapped = _VARIANT_KANJI.get(candidate, candidate)
+        if mapped and mapped not in candidates:
+            candidates.append(mapped)
+
+    for candidate in candidates:
+        table = Kanwa().load(candidate)
+        entries = (table.get(candidate) or []) if table else []
+        if not entries:
             continue
-        for value in _voice_variants(romaji):
-            if value and value not in values:
-                values.append(value)
-    return tuple(values)
+        values: list[str] = []
+        for yomi, _condition in entries:
+            romaji = _normalize_romaji(
+                "".join(
+                    item.get("hepburn", "")
+                    for item in _KAKASI.convert(str(yomi))
+                )
+            )
+            if not romaji:
+                continue
+            for value in _voice_variants(romaji):
+                if value and value not in values:
+                    values.append(value)
+        if values:
+            return tuple(values)
+
+    for candidate in candidates:
+        converted = Itaiji().convert(candidate)
+        if converted and converted != candidate:
+            readings = _kanji_readings(converted)
+            if readings:
+                return readings
+    return ()
 
 
 @lru_cache(maxsize=8192)
@@ -250,7 +268,7 @@ def _sequential_spans(
                 continue
             char = text[ti]
             key_char = key[ki]
-            if _kana_unify(key_char) == _kana_unify(char):
+            if _kana_unify(fold_variants(key_char)) == _kana_unify(fold_variants(char)):
                 stack.append((ti + 1, ki + 1))
             run_end = ki
             while run_end < total_key and (
@@ -299,6 +317,14 @@ def _searchable(text: str, query: str) -> tuple[tuple[int, int], ...]:
     if query:
         for match in re.finditer(re.escape(query), text, re.IGNORECASE):
             spans.append((match.start(), match.end()))
+
+    folded_text = fold_variants(text)
+    folded_query = fold_variants(query)
+    if folded_query:
+        start = folded_text.find(folded_query)
+        while start != -1:
+            spans.append((start, start + len(folded_query)))
+            start = folded_text.find(folded_query, start + 1)
 
     unified_text = _kana_unify(text)
     unified_query = _kana_unify(query)

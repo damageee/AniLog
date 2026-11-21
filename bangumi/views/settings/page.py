@@ -26,7 +26,7 @@ from bangumi.views.settings.profile import (
 from bangumi.views.settings.sync import open_sync_dialog
 
 THEME_BUTTON_WIDTH = 240
-APP_VERSION_LABEL = "v1.0"
+APP_VERSION_LABEL = "v2.0"
 
 
 def settings_view(page: ft.Page) -> ft.View:

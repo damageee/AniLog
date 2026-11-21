@@ -13,10 +13,11 @@ from bangumi.ui.layout import (
     page_padding,
     vertical_page,
 )
-from bangumi.views.navigation import ENTRY, TAG, open_detail
+from bangumi.views.navigation import ENTRY, TAG
 from bangumi.views.widgets.links import DetailLink, TagChips
 from bangumi.data.quarter_core import sort_records_by_broadcast
 from bangumi.data.watched_data import Record, load_records, split_tags
+from bangumi.data.dates import parse_iso_date
 
 
 def build_tag_view(
@@ -24,13 +25,35 @@ def build_tag_view(
     records: list[Record],
     clicked: Record,
     route: str,
+    *,
+    year: int | None = None,
+    tag: str | None = None,
+    title: str | None = None,
 ) -> ft.View:
-    tag = str(clicked.get("tag", "") or "").strip()
+    # 允许显式指定标签，避免依赖 clicked 记录里的 tag 字段。
+    tag_text = (
+        str(tag).strip()
+        if tag is not None
+        else str(clicked.get("tag", "") or "").strip()
+    )
     matches = [
         record
         for record in records
-        if tag in split_tags(record.get("tag", ""))
+        if tag_text in split_tags(record.get("tag", ""))
     ]
+    # 带年份时只保留该年补完的记录。
+    if year is not None:
+        matches = [
+            record
+            for record in matches
+            if (
+                (date := parse_iso_date(
+                    str(record.get("completion") or "")
+                ))
+                is not None
+                and date.year == year
+            )
+        ]
     matches = sort_records_by_broadcast(matches)
     tag_colors = Preferences.load().tag_colors
     foreground = foreground_color(page)
@@ -83,11 +106,13 @@ def build_tag_view(
     if not rows:
         rows = [ui_text("", size=14, color=foreground)]
 
+    # 允许调用方覆盖标题（例如年度报告带上年份）。
+    appbar_title = title or tag_text or "TAG"
     view = ft.View(
         route=route,
         appbar=ft.AppBar(
             title=ui_text(
-                tag or "TAG",
+                appbar_title,
                 no_wrap=True,
                 max_lines=1,
                 overflow=ft.TextOverflow.ELLIPSIS,
@@ -125,18 +150,15 @@ def build_tag_view(
     )
     view.data = {
         "rebuild": lambda: build_tag_view(
-            page, load_records(), clicked, route
+            page,
+            load_records(),
+            clicked,
+            route,
+            year=year,
+            tag=tag_text,
+            title=title,
         )
     }
     return view
 
 
-def open_tag_page(
-    page: ft.Page,
-    records: list[Record],
-    record: Record,
-    *,
-    value: str | None = None,
-) -> None:
-    """打开某个标签的 TAG 详情页。"""
-    open_detail(page, records, record, TAG, value=value)

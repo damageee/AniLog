@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import flet as ft
+import flet.canvas as fcanvas
 from bangumi.ui.anim import animation
 from bangumi.ui.theme import (
     ui_text,
@@ -16,21 +17,32 @@ from bangumi.ui.anim import (
 )
 from bangumi.ui.page_state import first_entry, mark_seen
 from bangumi.ui.colors import (
-    background_color,
     foreground_color,
 )
+from bangumi.ui.hover_state import register
+from bangumi.ui.interaction import tooltip_colors
 from bangumi.ui.layout import (
     vertical_page,
 )
+from bangumi.ui.layout import chart_width as fit_chart_width
 from bangumi.data.statistics.models import BroadcastData
 from bangumi.data.statistics.broadcast import broadcast_data
+from bangumi.data.ratings import parse_rating
 from bangumi.data.sorting import sort_detail_items
 from bangumi.data.statistics.records import _record_item
+from bangumi.views.general.bar_chart import build_bar_chart_view
+from bangumi.views.navigation import push_view
+from bangumi.views.navigation.stack import register_resize_handler
+from bangumi.views.statistics.rating.charts import (
+    chart_stack,
+    smooth_path_elements,
+)
 from bangumi.views.templates.list_page import open_list_page
 from bangumi.views.statistics.common.overlays import (
     _OverlayLayers,
     _install_overlay_hook,
     _overlay_placement,
+    _attach_overlay_cleanup,
     _register_overlay,
 )
 from bangumi.views.statistics.common.shared import (
@@ -39,6 +51,9 @@ from bangumi.views.statistics.common.shared import (
     CHART_HEIGHT,
     CHART_MAX_BAR,
     CHART_SLOT,
+    JOURNEY_BASELINE,
+    JOURNEY_HEIGHT,
+    JOURNEY_TOP,
     _accent,
     _chart_viewport,
     _back_view,
@@ -87,6 +102,25 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
     counts = [len(data.by_year[year]) for year in data.years]
     max_count = max(counts, default=0) or 1
     total = sum(counts)
+    # 年度平均分与每部作品的评分，用于曲线图与点击后的横条竞赛页。
+    year_items: dict[int, list[tuple[str, float]]] = {}
+    averages: list[float] = []
+    for year in data.years:
+        items: list[tuple[str, float]] = []
+        for record in data.by_year.get(year, []):
+            score = parse_rating(record.get("rating"))
+            if score is None:
+                continue
+            name = str(
+                record.get("anime") or record.get("entry") or ""
+            ).strip()
+            items.append((name or "未知", float(score)))
+        year_items[year] = items
+        averages.append(
+            sum(value for _, value in items) / len(items)
+            if items
+            else 0.0
+        )
     chart_width = max(1, len(data.years)) * CHART_SLOT
     viewport_width = min(
         max(120.0, float(page.width or 1000) - 48),
@@ -96,24 +130,16 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
         "width": viewport_width,
     }
 
-    label_text = ui_text("", size=12, color=fg)
+    tip_bg, tip_fg = tooltip_colors(page)
+    label_text = ui_text("", size=12, color=tip_fg)
     label = ft.Container(
         width=170,
         height=34,
         alignment=ft.Alignment.CENTER,
         ignore_interactions=True,
         padding=ft.Padding.symmetric(horizontal=10, vertical=6),
-        border_radius=8,
-        bgcolor=background_color(page),
-        border=ft.Border.all(
-            1,
-            ft.Colors.with_opacity(0.25, accent),
-        ),
-        shadow=ft.BoxShadow(
-            blur_radius=10,
-            color=ft.Colors.with_opacity(0.2, ft.Colors.BLACK),
-            offset=ft.Offset(2, 4),
-        ),
+        border_radius=4,
+        bgcolor=ft.Colors.with_opacity(0.95, tip_bg),
         content=label_text,
     )
 
@@ -138,6 +164,27 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
 
     def open_year(event: ft.ControlEvent, year: int) -> None:
         _open_year_list(page, data, year)
+
+    def open_year_rating(year: int) -> None:
+        """打开该年度有评分作品的横条竞赛页。"""
+        arr = year_items.get(year, [])
+        if not arr:
+            return
+        title = f"{year}年（评分）"
+        route = f"/statistics/broadcast/year/{year}/rating"
+
+        def build() -> ft.View:
+            return build_bar_chart_view(
+                page,
+                arr,
+                max_value=100.0,
+                title=title,
+                route=route,
+                decimals=0,
+                rebuild=build,
+            )
+
+        push_view(page, build())
 
     def set_hover_scale(event: ft.ControlEvent, value: float) -> None:
         control = getattr(event, "control", None)
@@ -256,6 +303,13 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
             ft.AnimationCurve.EASE_OUT,
         )
         bar.scale = ft.Scale(1.0)
+        # 点击统一挂在整列上（GestureDetector），极短柱也能点中。
+
+        def reset_bar_hover(target=bar) -> None:
+            # 只改属性，不 update：此时视图正在卸载。
+            target.scale = ft.Scale(1.0)
+
+        register(bar, reset_bar_hover)
         count_text = ui_text(
             str(count) if not animate else "0",
             size=9,
@@ -276,6 +330,19 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[count_text, bar, year_label],
         )
+        # 命中高度取柱高；短于 1/4 完整高度时才扩大。
+        hit_height = max(
+            float(target_height),
+            CHART_HEIGHT / 4.0,
+        )
+        hit_layer = ft.Container(
+            width=CHART_BAR_WIDTH,
+            height=hit_height,
+            bgcolor=ft.Colors.TRANSPARENT,
+            bottom=0,
+            left=(CHART_SLOT - CHART_BAR_WIDTH) / 2,
+            on_click=lambda event, y=year: open_year(event, y),
+        )
         gesture = ft.GestureDetector(
             scale=ft.Scale(1.0),
             animate_scale=animation(
@@ -291,9 +358,6 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
             ),
             on_exit=(
                 lambda event, y=year: exit_year(event, y)
-            ),
-            on_tap=(
-                lambda event, y=year: open_year(event, y)
             ),
             on_long_press_start=(
                 lambda event, y=year, c=count: long_start(
@@ -311,8 +375,18 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
             on_long_press_cancel=(
                 lambda event, y=year: long_end(event, y)
             ),
-            content=column,
+            content=ft.Stack(
+                width=CHART_SLOT,
+                height=CHART_HEIGHT,
+                controls=[column, hit_layer],
+            ),
         )
+
+        def reset_gesture_hover(target=gesture) -> None:
+            # 只改属性，不 update：此时视图正在卸载。
+            target.scale = ft.Scale(1.0)
+
+        register(gesture, reset_gesture_hover)
         bars.append(gesture)
         bar_entries.append(
             (bar, count_text, count, target_height)
@@ -355,6 +429,111 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
         controls=[chart_scroll],
     )
 
+    # 年度平均分曲线：纵轴 50~100，低于 50 的点画在基准线下方。
+    def _avg_tip(index: int) -> str:
+        if not 0 <= index < len(data.years):
+            return ""
+        year = data.years[index]
+        count = len(year_items.get(year, []))
+        return (
+            f"{year}年 · 平均 {averages[index]:.2f}\n"
+            f"{count} 部有评分"
+        )
+
+    average_holder = ft.Container()
+    route_key = "/statistics/broadcast/year"
+
+    def _average_shapes(width: float) -> list:
+        # 纵轴 50~100；若存在低于 50 的点，底部预留一段画在线下方。
+        count = len(data.years)
+        slot = width / max(1, count)
+        low = min((v for v in averages if v > 0), default=50.0)
+        extra = (
+            (JOURNEY_BASELINE - JOURNEY_TOP) * 0.22
+            if low < 50.0
+            else 0.0
+        )
+        baseline = JOURNEY_BASELINE - extra
+
+        def y_of(value: float) -> float:
+            if value >= 50.0:
+                ratio = (min(value, 100.0) - 50.0) / 50.0
+                return baseline - ratio * (baseline - JOURNEY_TOP)
+            ratio = (50.0 - value) / 50.0
+            return baseline + ratio * extra
+
+        shapes: list = []
+        points = [
+            (index * slot + slot / 2, y_of(value))
+            for index, value in enumerate(averages)
+            if value > 0
+        ]
+        if len(points) >= 2:
+            shapes.append(
+                fcanvas.Path(
+                    elements=smooth_path_elements(points),
+                    paint=ft.Paint(
+                        color=accent,
+                        stroke_width=2,
+                        style=ft.PaintingStyle.STROKE,
+                        stroke_cap=ft.StrokeCap.ROUND,
+                    ),
+                )
+            )
+        # 50 分基准线：与图表等宽的淡灰细线。
+        shapes.append(
+            fcanvas.Line(
+                x1=0.0,
+                y1=baseline,
+                x2=width,
+                y2=baseline,
+                paint=ft.Paint(
+                    color=ft.Colors.with_opacity(0.25, fg),
+                    stroke_width=1,
+                ),
+            )
+        )
+        return shapes
+
+    def build_average_chart() -> ft.Control:
+        count = len(data.years)
+        width = float(
+            fit_chart_width(page, max(360.0, 44.0 * count))
+        )
+        slot = width / max(1, count)
+        canvas = fcanvas.Canvas(
+            width=width,
+            height=JOURNEY_HEIGHT,
+            shapes=_average_shapes(width),
+        )
+        control, _ = chart_stack(
+            page,
+            width=width,
+            canvas=canvas,
+            count=count,
+            text_at=_avg_tip,
+            slot=slot,
+            on_tap=lambda index: open_year_rating(
+                data.years[index]
+            ),
+        )
+        return control
+
+    def on_average_resize(event=None) -> None:
+        # 仅栈顶页面处理，避免后台页面重算。
+        if (
+            not page.views
+            or str(getattr(page.views[-1], "route", "")) != route_key
+        ):
+            return
+        try:
+            average_holder.content = build_average_chart()
+            average_holder.update()
+        except Exception:
+            pass
+
+    register_resize_handler(page, route_key, on_average_resize)
+
     if data.years:
         page_controls: list[ft.Control] = [
             ui_text(
@@ -364,6 +543,16 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
             ),
             chart_frame,
         ]
+        if data.years:
+            average_holder.content = build_average_chart()
+            page_controls.append(
+                ui_text(
+                    "年度平均分（纵轴 50~100，悬浮查看，点击打开该年评分横条）",
+                    size=12,
+                    color=ft.Colors.with_opacity(0.72, fg),
+                )
+            )
+            page_controls.append(average_holder)
     else:
         page_controls = [
             _no_records_note(
@@ -424,6 +613,7 @@ def year_view(page: ft.Page, *, animate_bars: bool = True) -> ft.View:
         if animate:
             page.run_task(animate)
         page.run_task(scroll_to_latest)
+    _attach_overlay_cleanup(view, overlay)
     return view
 
 

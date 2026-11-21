@@ -13,7 +13,6 @@ from bangumi.ui.interaction import (
     back_icon,
 )
 from bangumi.views.navigation import (
-    go_back,
     push_view,
 )
 from bangumi.ui.layout import (
@@ -70,13 +69,5 @@ def _read_import_log_text(page: ft.Page) -> str:
     except OSError:
         content = ""
     return content if content.strip() else "还没有导入记录"
-
-
-def _close_import_log(page: ft.Page) -> None:
-    if (
-        page.views
-        and getattr(page.views[-1], "route", "") == "/settings/import-log"
-    ):
-        go_back(page, "/settings/import-log")
 
 

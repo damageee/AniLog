@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import math
+import weakref
 
 import flet as ft
 from bangumi.ui.events import is_hover
 from bangumi.ui.platform import is_mobile
 
 from bangumi.ui.colors import (
-    background_color,
     foreground_color,
     link_hover_color,
 )
@@ -21,6 +21,7 @@ from bangumi.ui.constants import (
     HOVER_SCALE_IMAGE,
     ICON_HOVER_OPACITY,
 )
+from bangumi.ui.theme import ui_text
 
 
 def _anim(ms: int):
@@ -36,7 +37,21 @@ def hover_link(
     on_click,
 ) -> ft.Container:
     """悬停时变为浅蓝色的可点击文本。"""
-    holder = ft.Container(content=text, on_click=on_click)
+
+    def reset_hover() -> None:
+        # 点击后页面通常切换，指针不会再发 hover 离开事件，先复位。
+        text.color = base_color
+        try:
+            text.update()
+        except Exception:
+            pass
+
+    def on_click_reset(event: ft.ControlEvent) -> None:
+        reset_hover()
+        if callable(on_click):
+            on_click(event)
+
+    holder = ft.Container(content=text, on_click=on_click_reset)
 
     def on_hover(event: ft.ControlEvent) -> None:
         hovered = is_hover(event)
@@ -49,6 +64,10 @@ def hover_link(
             pass
 
     holder.on_hover = on_hover
+    # 视图离开栈顶时复位颜色，避免返回后停在 hover 态。
+    from bangumi.ui.hover_state import register
+
+    register(holder, reset_hover)
     return holder
 
 
@@ -58,8 +77,22 @@ def hover_copy(
     on_click,
 ) -> ft.Container:
     """悬停时显示下划线的可点击复制文本，颜色不变。"""
-    holder = ft.Container(content=text, on_click=on_click)
     base_style = text.style
+
+    def reset_hover() -> None:
+        # 点击后指针可能不再回到本控件，先把样式复位。
+        text.style = base_style
+        try:
+            text.update()
+        except Exception:
+            pass
+
+    def on_click_reset(event: ft.ControlEvent) -> None:
+        reset_hover()
+        if callable(on_click):
+            on_click(event)
+
+    holder = ft.Container(content=text, on_click=on_click_reset)
 
     def on_hover(event: ft.ControlEvent) -> None:
         hovered = is_hover(event)
@@ -79,6 +112,10 @@ def hover_copy(
             pass
 
     holder.on_hover = on_hover
+    # 视图离开栈顶时复位下划线样式。
+    from bangumi.ui.hover_state import register
+
+    register(holder, reset_hover)
     return holder
 
 
@@ -147,6 +184,27 @@ def hover_icon(
 
         holder.on_click = on_click_with_flash
 
+    def reset_icon_hover() -> None:
+        # 只改属性，不 update：此时视图正在卸载。
+        holder.bgcolor = ft.Colors.TRANSPARENT
+
+    from bangumi.ui.hover_state import register
+
+    register(holder, reset_icon_hover)
+
+    previous_click = holder.on_click
+    if callable(previous_click):
+        def on_click_reset(event: ft.ControlEvent) -> None:
+            # 先复位光晕，避免返回时图标停在 hover 状态。
+            holder.bgcolor = ft.Colors.TRANSPARENT
+            try:
+                holder.update()
+            except Exception:
+                pass
+            previous_click(event)
+
+        holder.on_click = on_click_reset
+
     return holder
 
 
@@ -178,20 +236,38 @@ def hover_zoom(
     scale: float = HOVER_SCALE_IMAGE,
 ) -> ft.Container:
     """包装控件，使其在悬停时略微放大。"""
-    holder = ft.Container(content=control)
-    holder.animate_scale = _anim(ANIM_SLOW_MS)
-    holder.scale = 1.0
+    inner = ft.Container(
+        content=control,
+        scale=1.0,
+        animate_scale=_anim(ANIM_SLOW_MS),
+    )
+    state = {"scale": 1.0}
 
-    def on_hover(event: ft.ControlEvent) -> None:
-        hovered = is_hover(event)
-        holder.scale = scale if hovered else 1.0
+    def apply(on: bool) -> None:
+        target = scale if on else 1.0
+        if state["scale"] == target:
+            return
+        state["scale"] = target
+        inner.scale = target
         try:
-            holder.update()
+            inner.update()
         except Exception:
             pass
 
-    holder.on_hover = on_hover
-    return holder
+    sensor = ft.GestureDetector(
+        on_enter=lambda event: apply(True),
+        on_exit=lambda event: apply(False),
+        content=inner,
+    )
+
+    def reset_zoom() -> None:
+        # 只改属性，不 update：此时视图正在卸载。
+        inner.scale = 1.0
+
+    from bangumi.ui.hover_state import register
+
+    register(inner, reset_zoom)
+    return ft.Container(content=sensor)
 
 
 def is_attached(control: ft.Control | None) -> bool:
@@ -261,6 +337,11 @@ def scroll_bottom_action(
     if scroller is None:
         return None
     original = getattr(scroller, "on_scroll", None)
+
+    def is_top() -> bool:
+        """仅栈顶视图处理尺寸/滚动事件，避免背景页事件堆积。"""
+        return bool(page.views) and page.views[-1] is view
+
     state: dict[str, object] = {
         "pixels": 0.0,
     }
@@ -321,6 +402,11 @@ def scroll_bottom_action(
         apply_extent(total - float(viewport))
 
     def on_scroll(event: ft.OnScrollEvent) -> None:
+        # 非栈顶时直接交给原处理器并返回，避免无谓计算。
+        if not is_top():
+            if callable(original):
+                original(event)
+            return
         state["pixels"] = float(
             getattr(event, "pixels", 0) or 0
         )
@@ -348,6 +434,9 @@ def scroll_bottom_action(
     scroller.on_scroll = on_scroll
 
     def update_viewport(event: ft.ControlEvent) -> None:
+        # 非栈顶视图不必更新尺寸。
+        if not is_top():
+            return
         height = getattr(event, "height", None)
         if isinstance(height, (int, float)):
             size_state["viewport"] = float(height)
@@ -359,6 +448,11 @@ def scroll_bottom_action(
         event: ft.ControlEvent,
         previous_handler=previous_viewport,
     ) -> None:
+        # 非栈顶时只转交原处理器。
+        if not is_top():
+            if callable(previous_handler):
+                previous_handler(event)
+            return
         update_viewport(event)
         if callable(previous_handler):
             previous_handler(event)
@@ -373,6 +467,9 @@ def scroll_bottom_action(
             target=child,
             previous_handler=previous_child,
         ) -> None:
+            # 非栈顶视图跳过高度统计。
+            if not is_top():
+                return
             height = getattr(event, "height", None)
             if isinstance(height, (int, float)):
                 child_heights[id(target)] = float(height)
@@ -385,31 +482,62 @@ def scroll_bottom_action(
     return holder
 
 
+def tooltip_colors(page: ft.Page) -> tuple[str, str]:
+    """返回与系统 tooltip 一致的 (背景色, 文字色)。"""
+    dark = page.theme_mode == ft.ThemeMode.DARK
+    return (
+        "#E6E6E6" if dark else "#616161",
+        "#1F1F1F" if dark else "#FFFFFF",
+    )
+
+
 class FloatingLabel:
     """移动端长按图表时跟随手指的标签。"""
 
     def __init__(self, page: ft.Page) -> None:
+        global _LABEL_HOOKS_INSTALLED
+
         self.page = page
-        self.text = ft.Text("", size=11)
+        bubble_bg, bubble_fg = tooltip_colors(page)
+        self.text = ft.Text(
+            "",
+            size=12,
+            color=bubble_fg,
+            no_wrap=True,
+        )
         self.holder = ft.Container(
             visible=False,
             ignore_interactions=True,
-            padding=ft.Padding.symmetric(horizontal=8, vertical=5),
-            border_radius=6,
-            bgcolor=background_color(page),
-            border=ft.Border.all(
-                1,
-                ft.Colors.with_opacity(0.25, foreground_color(page)),
-            ),
+            padding=ft.Padding.symmetric(horizontal=10, vertical=6),
+            border_radius=4,
+            bgcolor=ft.Colors.with_opacity(0.95, bubble_bg),
             content=self.text,
         )
+        _LIVE_LABELS[:] = [
+            ref for ref in _LIVE_LABELS if ref() is not None
+        ]
+        _LIVE_LABELS.append(weakref.ref(self))
+        if not _LABEL_HOOKS_INSTALLED:
+            from bangumi.views.navigation.stack import (
+                register_navigation_hook,
+            )
+
+            register_navigation_hook(_hide_all_labels)
+            _LABEL_HOOKS_INSTALLED = True
+        self._hooks_installed = _LABEL_HOOKS_INSTALLED
 
     def show(self, event: ft.ControlEvent, message: str) -> None:
         from bangumi.ui.text_metrics import text_width
         from bangumi.ui.events import event_position
 
+        # 同时只保留一个气泡。
+        for ref in list(_LIVE_LABELS):
+            other = ref()
+            if other is not None and other is not self:
+                other.hide()
+
         self.text.value = message
-        width = max(60.0, text_width(message, size=11) + 20)
+        width = max(60.0, text_width(message, size=12) + 24)
         x, y = event_position(event)
         page_width = float(self.page.width or 1000)
         page_height = float(self.page.height or 800)
@@ -420,22 +548,114 @@ class FloatingLabel:
         top = y - 44
         if top < 8:
             top = min(page_height - 40, y + 16)
+        mounted = self.holder in self.page.overlay
         self.holder.width = width
         self.holder.left = left
         self.holder.top = max(8, top)
         self.holder.visible = True
-        if self.holder not in self.page.overlay:
+        bubble_bg, bubble_fg = tooltip_colors(self.page)
+        self.holder.bgcolor = ft.Colors.with_opacity(0.95, bubble_bg)
+        if self.text is not None:
+            self.text.color = bubble_fg
+        if not mounted:
             self.page.overlay.append(self.holder)
+            try:
+                self.page.update()
+            except Exception:
+                pass
+            return
+        try:
+            self.holder.update()
+        except Exception:
+            try:
+                self.page.update()
+            except Exception:
+                pass
+
+    def hide(
+        self,
+        *,
+        detach: bool = False,
+        update: bool = True,
+    ) -> None:
+        if detach and self.holder in self.page.overlay:
+            self.page.overlay.remove(self.holder)
+        elif detach:
+            pass
+        if not self.holder.visible and not detach:
+            return
+        self.holder.visible = False
+        if not update:
+            return
         try:
             self.holder.update()
         except Exception:
             pass
 
-    def hide(self) -> None:
-        if not self.holder.visible:
-            return
-        self.holder.visible = False
-        try:
-            self.holder.update()
-        except Exception:
-            pass
+
+_LIVE_LABELS: list[weakref.ref] = []
+_LABEL_HOOKS_INSTALLED = False
+
+
+def _hide_all_labels(page: ft.Page) -> None:
+    for ref in list(_LIVE_LABELS):
+        label = ref()
+        if label is None:
+            _LIVE_LABELS.remove(ref)
+            continue
+        label.hide(detach=True, update=False)
+
+
+def hide_all_labels(page: ft.Page) -> None:
+    """清理所有悬浮标签（resize 等场景）。"""
+    _hide_all_labels(page)
+
+
+class ClickableText:
+    """带 hover 效果的可点击文本。统一入口，避免各处重复写 on_hover。"""
+
+    def __init__(
+        self,
+        page: ft.Page,
+        text: str,
+        *,
+        size: int = 14,
+        color: str | None = None,
+        weight: ft.FontWeight | None = None,
+        no_wrap: bool = False,
+        max_lines: int | None = None,
+        overflow: ft.TextOverflow | None = None,
+        on_click=None,
+        tooltip: str | None = None,
+    ) -> None:
+        self.page = page
+        base = color or foreground_color(page)
+        kwargs = {}
+        if no_wrap:
+            kwargs["no_wrap"] = True
+        if max_lines is not None:
+            kwargs["max_lines"] = max_lines
+        if overflow is not None:
+            kwargs["overflow"] = overflow
+        self.text = ui_text(
+            text,
+            size=size,
+            color=base,
+            weight=weight,
+            **kwargs,
+        )
+        self.control = ft.Container(
+            content=self.text,
+            on_click=on_click,
+            tooltip=tooltip,
+        )
+
+        def on_hover(event: ft.ControlEvent) -> None:
+            hovered = is_hover(event)
+            self.text.color = link_hover_color(page) if hovered else base
+            try:
+                self.text.update()
+            except Exception:
+                pass
+
+        self.control.on_hover = on_hover

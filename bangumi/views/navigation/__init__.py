@@ -7,7 +7,6 @@ from bangumi.views.navigation.stack import (
 )
 from bangumi.views.navigation.detail import open_detail
 from bangumi.views.navigation.detail_kinds import (
-    AUTHOR,
     BROADCAST,
     CAST,
     CATEGORY,
@@ -22,7 +21,6 @@ from bangumi.views.navigation.detail_kinds import (
 )
 
 __all__ = [
-    "AUTHOR",
     "BROADCAST",
     "CAST",
     "CATEGORY",

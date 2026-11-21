@@ -39,8 +39,4 @@ existing view patterns. Do not touch data/storage/app/routes unless asked.
 - **职责边界 (No Runtime Debugging):** 只负责按指令修改代码，并保证
   `compileall` 与 `import` 检查不报错；不要实际运行程序或自行调试。用户会
   自行测试，出现问题后再交由你调试。
-- **完成回报 (Completion Reports):** 每完成一项任务，在最终回复前使用
-  `session_send` 向派发任务的会话（如 ses_e2fe3）发送一句简要的完成消息，
-  包含任务名与检查结果。不要使用 `session_broadcast`，也不要发送协调或警告
-  消息；若发现文件可能被其他会话改动，只在最终回复中说明风险，由用户自行
-  协调。
+- 不要发给其他会话，也不要使用 `session_broadcast`，也不要发送协调或警告消息；若发现文件可能被其他会话改动，只在最终回复中说明风险，由用户自行协调。

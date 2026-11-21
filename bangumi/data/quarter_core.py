@@ -47,10 +47,6 @@ def quarter_label(year: int, index: int) -> str:
     return f"{year}年{_QUARTER_NAMES[index]}季度"
 
 
-def first_month(index: int) -> int:
-    return {0: 1, 1: 3, 2: 6, 3: 9}[index]
-
-
 def quarter_target_key(text: str) -> str:
     target = quarter_of_broadcast(text)
     if target is None:

@@ -8,8 +8,9 @@ from typing import Callable
 import flet as ft
 import flet.canvas as fcanvas
 
-from bangumi.ui.colors import background_color, foreground_color
+from bangumi.ui.colors import foreground_color
 from bangumi.ui.events import is_hover
+from bangumi.ui.interaction import tooltip_colors
 from bangumi.ui.platform import is_mobile
 from bangumi.ui.layout import chart_width as fit_chart_width
 from bangumi.ui.text_metrics import text_width
@@ -123,74 +124,6 @@ def month_labels(
     )
 
 
-def taste_axis(
-    keys: list[tuple[int, int]],
-    *,
-    page: ft.Page,
-    slot: float,
-    secondary: str,
-    fg: str,
-) -> ft.Column:
-    width = max(1, len(keys)) * slot
-    months_row = ft.Row(
-        width=width,
-        spacing=0,
-        controls=[
-            ft.Container(
-                width=slot,
-                alignment=ft.Alignment.CENTER,
-                content=ui_text(
-                    str(month),
-                    size=8,
-                    color=secondary,
-                    no_wrap=True,
-                ),
-            )
-            for _, month in keys
-        ],
-    )
-    groups: list[tuple[int, int]] = []
-    for year, _ in keys:
-        if groups and groups[-1][0] == year:
-            groups[-1] = (year, groups[-1][1] + 1)
-        else:
-            groups.append((year, 1))
-    years_row = ft.Row(
-        width=width,
-        spacing=0,
-        controls=[
-            ft.Column(
-                width=count * slot,
-                spacing=0,
-                controls=[
-                    ft.Container(
-                        height=1,
-                        bgcolor=ft.Colors.with_opacity(
-                            0.25,
-                            foreground_color(page),
-                        ),
-                    ),
-                    ft.Container(
-                        height=14,
-                        alignment=ft.Alignment.CENTER,
-                        content=ui_text(
-                            str(year),
-                            size=8,
-                            color=secondary,
-                        ),
-                    ),
-                ],
-            )
-            for year, count in groups
-        ],
-    )
-    return ft.Column(
-        width=width,
-        spacing=0,
-        controls=[months_row, years_row],
-    )
-
-
 def chart_stack(
     page: ft.Page,
     *,
@@ -199,26 +132,24 @@ def chart_stack(
     count: int,
     text_at: Callable[[int], str],
     slot: float,
+    on_tap: Callable[[int], None] | None = None,
 ) -> tuple[ft.Control, Callable[[], None]]:
     fg = foreground_color(page)
     mobile = is_mobile(page)
+    tip_bg, tip_fg = tooltip_colors(page)
     label_text = ui_text(
         "",
-        size=11,
-        color=fg,
+        size=12,
+        color=tip_fg,
         no_wrap=True,
     )
     label = ft.Container(
         visible=False,
         ignore_interactions=True,
-        bgcolor=background_color(page),
-        border=ft.Border.all(
-            1,
-            ft.Colors.with_opacity(0.25, fg),
-        ),
-        border_radius=6,
+        bgcolor=ft.Colors.with_opacity(0.95, tip_bg),
+        border_radius=4,
         padding=ft.Padding.symmetric(
-            horizontal=8,
+            horizontal=10,
             vertical=6,
         ),
         content=label_text,
@@ -233,8 +164,8 @@ def chart_stack(
         label_text.value = text
         lines = text.split("\n")
         label.width = max(
-            text_width(line, size=11) for line in lines
-        ) + 24
+            text_width(line, size=12) for line in lines
+        ) + 28
         left = index * slot
         label.left = max(
             0.0,
@@ -301,6 +232,11 @@ def chart_stack(
                 else None
             ),
         )
+        # 命中块上的点击统一回调 index，悬浮/长按逻辑不变。
+        if on_tap is not None:
+            box.on_click = (
+                lambda event, i=index: on_tap(i)
+            )
         if not mobile:
             return box
         return ft.GestureDetector(
@@ -337,6 +273,7 @@ def line_chart(
     *,
     tooltips: Callable[[int], str] | None = None,
     limit: int | None = None,
+    on_tap: Callable[[int], None] | None = None,
 ) -> tuple[ft.Control, Callable[..., None]]:
     count = len(keys)
     default_width = max(360.0, 44.0 * count)
@@ -370,5 +307,6 @@ def line_chart(
             count=count,
             text_at=tooltips,
             slot=slot,
+            on_tap=on_tap,
         )
     return chart, redraw

@@ -17,6 +17,7 @@ from bangumi.views.general.bar_chart import (
 from bangumi.ui.colors import (
     foreground_color,
 )
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.ui.feedback import (
     no_records_note,
 )
@@ -551,10 +552,11 @@ def honor_view(page: ft.Page) -> ft.View:
         rebuild=lambda: honor_view(page),
     )
 
-    previous_resize = page.on_resize
-
     def on_resize(event: ft.ControlEvent) -> None:
-        if view in page.views and page.views[-1] is view:
+        # 仅栈顶响应
+        if view not in page.views or page.views[-1] is not view:
+            return
+        if view in page.views:
             width = fit_chart_width(page, 1000.0, min_width=240.0)
             new_label = min(88.0, max(56.0, width * 0.18))
             new_data = max(80.0, (width - new_label - 12) / 3)
@@ -580,10 +582,12 @@ def honor_view(page: ft.Page) -> ft.View:
                     board.update()
                 except Exception:
                     pass
-        if previous_resize is not None:
-            previous_resize(event)
 
-    page.on_resize = on_resize
+    register_resize_handler(
+        page,
+        "/statistics/studios/honor",
+        on_resize,
+    )
     return view
 
 

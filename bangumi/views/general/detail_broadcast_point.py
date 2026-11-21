@@ -21,7 +21,7 @@ from bangumi.core.utils import (
     month_from_value,
     month_value,
 )
-from bangumi.views.navigation import BROADCAST, ENTRY, open_detail
+from bangumi.views.navigation import ENTRY
 from bangumi.views.widgets.links import BROADCAST_DATE_RE, DetailLink
 from bangumi.data.quarter_core import sort_records_by_broadcast
 from bangumi.data.dates import parse_broadcast_date
@@ -686,12 +686,3 @@ def build_broadcast_point_view(
     return BroadcastPage(page, records, clicked, route).view
 
 
-def open_broadcast_point_page(
-    page: ft.Page,
-    records: list[Record],
-    record: Record,
-    *,
-    value: str | None = None,
-) -> None:
-    """打开某个放送日期的放送月份浏览器。"""
-    open_detail(page, records, record, BROADCAST, value=value)

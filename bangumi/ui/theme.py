@@ -30,9 +30,6 @@ SYSTEM_FONT_FALLBACK = [
 ]
 UI_FONT_FALLBACK = [SIMSUN_FONT, *SYSTEM_FONT_FALLBACK]
 
-# 统计文案对所有文字都使用内置的宋体字体。
-STATS_FONT = SIMSUN_FONT
-
 TITLE_SIZE = 40
 BROWN_PERIOD = "#8B4512"
 
@@ -45,27 +42,10 @@ def ui_text_style(font_family: str = UI_FONT, **kwargs) -> ft.TextStyle:
     )
 
 
-def stats_text_style(**kwargs) -> ft.TextStyle:
-    kwargs.setdefault("font_family_fallback", UI_FONT_FALLBACK)
-    return ft.TextStyle(
-        font_family=STATS_FONT,
-        **kwargs,
-    )
-
-
 def ui_text(value: str = "", **kwargs) -> ft.Text:
     kwargs.setdefault("font_family", UI_FONT)
     kwargs.setdefault("font_family_fallback", UI_FONT_FALLBACK)
     return ft.Text(value, **kwargs)
-
-
-def stats_text(value: str = "", **kwargs) -> ft.Text:
-    kwargs.setdefault("font_family_fallback", UI_FONT_FALLBACK)
-    return ft.Text(
-        value,
-        font_family=STATS_FONT,
-        **kwargs,
-    )
 
 
 def app_theme(*, dark: bool = False) -> ft.Theme:

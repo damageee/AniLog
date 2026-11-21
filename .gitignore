@@ -16,6 +16,7 @@ pip-wheel-metadata/
 # Build and packaging output
 dist/
 build/
+build_pack_windows/
 *.spec
 *.apk
 *.aab
@@ -33,6 +34,9 @@ storage/
 
 # test files
 testfile/
+
+# backups
+backup/
 
 # Test / type-check / coverage caches
 .pytest_cache/

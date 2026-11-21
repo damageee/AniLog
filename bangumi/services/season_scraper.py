@@ -1,4 +1,4 @@
-"""Fetch new anime titles from 長門番堂 (yuc.wiki) for one quarter."""
+"""从 長門番堂 (yuc.wiki) 抓取某一季度的新番标题。"""
 
 from __future__ import annotations
 

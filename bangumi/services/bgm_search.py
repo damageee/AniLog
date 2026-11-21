@@ -1,8 +1,7 @@
-"""Search Bangumi anime subjects for the 已阅 动画 field.
+"""在 Bangumi 中按名称搜索动画条目。
 
-The public entry point is :func:`search_bgm`: pass the 动画 value and get a
-scored list of subject dictionaries back.  Only one API request is made per
-call (no detail/alias requests); network failures return an empty list.
+公开入口为 :func:`search_bgm`：传入 动画 值，返回按分数排序的条目字典列表。
+每次调用只发一次 API 请求（不请求详情/别名）；网络失败时返回空列表。
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from pathlib import Path
 
 import requests
 
+from bangumi.core.text_variants import fold_variants
 from bangumi.services.proxy import current_proxies, mark_proxy_dead
 
 V0_SEARCH_URL = "https://api.bgm.tv/v0/search/subjects"
@@ -266,14 +266,14 @@ _CN_DIGITS = "零一二三四五六七八九"
 
 
 def _project_version() -> str:
-    """从 pyproject.toml 读取版本，失败时回退到 0.1.0。"""
+    """从 pyproject.toml 读取版本，失败时回退到 0.2.0。"""
     path = Path(__file__).resolve().parents[1] / "pyproject.toml"
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
         return "0.1.0"
     match = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"', text)
-    return match.group(1) if match else "0.1.0"
+    return match.group(1) if match else "0.2.0"
 
 
 def _platform_name() -> str:
@@ -293,6 +293,7 @@ def _user_agent() -> str:
 def _normalize(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
     text = text.replace("季度", "部分")
+    text = fold_variants(text)
     return "".join(
         char for char in text.casefold() if not char.isspace()
     )

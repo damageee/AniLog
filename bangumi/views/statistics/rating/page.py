@@ -39,17 +39,28 @@ from bangumi.ui.layout import (
     vertical_page,
 )
 from bangumi.ui.layout import chart_width as fit_chart_width
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.data.quarter_core import (
     broadcast_dates,
+    earliest_broadcast_date,
     quarter_for_month,
+    quarter_label,
 )
 from bangumi.data.watched_data import (
+    Record,
     load_records,
 )
 from bangumi.data.statistics.constants import (
     SEASONS,
 )
 from bangumi.data.statistics.journey import _completion_date
+from bangumi.views.general.detail_completion import (
+    open_completion_month,
+)
+from bangumi.views.general.detail_quarter_works import (
+    build_quarter_works_view,
+)
+from bangumi.views.navigation import push_view
 from bangumi.views.statistics.common.shared import (
     ANIMATION_SECONDS,
     ANIMATION_STEPS,
@@ -58,6 +69,7 @@ from bangumi.views.statistics.common.shared import (
     JOURNEY_TOP,
     _accent,
     _back_view,
+    range_label,
 )
 
 
@@ -302,7 +314,10 @@ def rating_view(page: ft.Page) -> ft.View:
         index = max(0, min(19, int(x // slot))) if slot else 0
         start = index * 5
         end = 100 if index == 19 else start + 5
-        hist_label.show(event, f"{start}~{end}")
+        count = bins[index]
+        hist_label.show(
+            event, f"{range_label(start, end)} · {count} 部"
+        )
         current = active_hist["bar"]
         if current is not None:
             scale_hist(current, False)
@@ -355,30 +370,40 @@ def rating_view(page: ft.Page) -> ft.View:
                 )
                 target.update()
 
-            bar.on_hover = on_hover
-            bar.on_click = (
-                lambda event, s=start, e=end: _open_rating_range(
-                    page, s, e
-                )
+            # 命中高度取柱高；短于 1/4 完整高度时才扩大。
+            hit_h = max(float(target), JOURNEY_HEIGHT / 4.0)
+            hit_layer = ft.Container(
+                width=slot - 6,
+                height=hit_h,
+                bgcolor=ft.Colors.TRANSPARENT,
+                on_hover=on_hover,
+                on_click=(
+                    lambda event, s=start, e=end: _open_rating_range(
+                        page, s, e
+                    )
+                ),
             )
+            bar.bottom = 0.0
+            slot_content = ft.Stack(
+                width=slot - 6,
+                height=hit_h,
+                controls=[bar, hit_layer],
+            )
+        else:
+            slot_content = ft.Container(width=slot - 6, height=0)
 
         slot_container = ft.Container(
             width=slot,
             height=JOURNEY_HEIGHT,
             alignment=ft.Alignment.BOTTOM_CENTER,
             tooltip=(
-                f"{start}~{end}"
+                f"{range_label(start, end)} · {bins[index]} 部"
                 if has_value and not is_mobile(page)
                 else None
             ),
-            content=bar,
+            content=slot_content,
         )
-        if has_value:
-            slot_container.on_click = (
-                lambda event, s=start, e=end: _open_rating_range(
-                    page, s, e
-                )
-            )
+        # 点击只绑定在柱子上，空白区域不响应点击。
         slot_bars.append(bar if has_value else None)
         return slot_container
 
@@ -495,6 +520,49 @@ def rating_view(page: ft.Page) -> ft.View:
         for key, values in era_quarters.items()
     }
     era_quarters, era_average = quarterly_series(era_quarters)
+
+    def open_era_quarter(index: int) -> None:
+        """打开该季度的作品列表。"""
+        year, season_index = era_quarters[index]
+        selected: list[Record] = []
+        for record in records:
+            date = earliest_broadcast_date(
+                str(record.get("broadcast") or "")
+            )
+            if date is None:
+                continue
+            if (
+                date[0] == year
+                and quarter_for_month(date[1])[0] == season_index
+            ):
+                selected.append(record)
+        route_q = (
+            f"/statistics/rating/quarter/{year}/{season_index}"
+        )
+        title_q = quarter_label(year, season_index)
+
+        def rebuild_q() -> ft.View:
+            return build_quarter_works_view(
+                page,
+                load_records(),
+                {},
+                route_q,
+                title=title_q,
+                selected=selected,
+            )
+
+        view_q = build_quarter_works_view(
+            page,
+            load_records(),
+            {},
+            route_q,
+            title=title_q,
+            selected=selected,
+            rebuild=rebuild_q,
+        )
+        if view_q is not None:
+            push_view(page, view_q)
+
     if era_quarters:
         def era_tooltip(index: int) -> str:
             year, season = era_quarters[index]
@@ -510,6 +578,7 @@ def rating_view(page: ft.Page) -> ft.View:
             [(era_average, monthly_color)],
             tooltips=era_tooltip,
             limit=0 if animate else None,
+            on_tap=open_era_quarter,
         )
 
         async def animate_era() -> None:
@@ -585,6 +654,16 @@ def rating_view(page: ft.Page) -> ft.View:
                 )
             return "\n".join(lines)
 
+        def open_taste_month(index: int) -> None:
+            """打开该月份的补完列表。"""
+            year, month = taste_months[index]
+            open_completion_month(
+                page,
+                year,
+                month,
+                records=records,
+            )
+
         taste_stack, refresh_taste = charts.chart_stack(
             page,
             width=taste_width,
@@ -592,6 +671,7 @@ def rating_view(page: ft.Page) -> ft.View:
             count=len(taste_months),
             text_at=taste_text,
             slot=taste_slot,
+            on_tap=open_taste_month,
         )
 
         def redraw_taste(
@@ -737,11 +817,6 @@ def rating_view(page: ft.Page) -> ft.View:
         page.run_task(animate_heat_cells, page, heat_controls, seconds=ANIMATION_SECONDS)
         page.run_task(reveal_histogram)
 
-    previous_resize = page.on_resize
-    if previous_resize is getattr(page, "_rating_resize_handler", None):
-        previous_resize = getattr(page, "_rating_resize_prev", None)
-    page._rating_resize_prev = previous_resize
-
     resize_state = {"token": 0, "scheduled": False}
 
     async def apply_resize() -> None:
@@ -751,17 +826,32 @@ def rating_view(page: ft.Page) -> ft.View:
             if token == resize_state["token"]:
                 break
         try:
-            if view in page.views and page.views[-1] is view:
+            # 按 route 判断栈顶，避免重建后闭包绑定新视图导致失效。
+            if (
+                page.views
+                and str(getattr(page.views[-1], "route", "")) == route
+            ):
                 mark_seen(page, route)
                 new_view = rating_view(page)
                 from bangumi.app import _attach_home_action
 
                 _attach_home_action(page, new_view)
-                view.controls = new_view.controls
+                # 复用旧滚动容器，避免滚动条闪回。
+                if view.controls and new_view.controls:
+                    old_column = view.controls[0]
+                    new_column = new_view.controls[0]
+                    try:
+                        old_column.controls = new_column.controls
+                    except Exception:
+                        view.controls = new_view.controls
+                else:
+                    view.controls = new_view.controls
                 view.appbar = new_view.appbar
                 view.padding = new_view.padding
                 if isinstance(new_view.data, dict):
                     view.data.update(new_view.data)
+                # rating_view 重建会注册新闭包，这里覆盖回当前仍生效的 handler。
+                register_resize_handler(page, route, on_resize)
                 page.update()
         except RuntimeError:
             pass
@@ -769,6 +859,12 @@ def rating_view(page: ft.Page) -> ft.View:
             resize_state["scheduled"] = False
 
     def on_resize(event=None) -> None:
+        # 按 route 判断栈顶。
+        if (
+            not page.views
+            or str(getattr(page.views[-1], "route", "")) != route
+        ):
+            return
         resize_state["token"] += 1
         if not resize_state["scheduled"]:
             resize_state["scheduled"] = True
@@ -776,12 +872,6 @@ def rating_view(page: ft.Page) -> ft.View:
                 page.run_task(apply_resize)
             except RuntimeError:
                 resize_state["scheduled"] = False
-        if (
-            previous_resize is not None
-            and previous_resize is not on_resize
-        ):
-            previous_resize(event)
 
-    page._rating_resize_handler = on_resize
-    page.on_resize = on_resize
+    register_resize_handler(page, route, on_resize)
     return view

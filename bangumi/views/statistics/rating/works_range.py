@@ -18,6 +18,7 @@ from bangumi.data.watched_data import (
     record_title,
 )
 from bangumi.data.ratings import parse_rating
+from bangumi.views.statistics.common.shared import range_label
 
 
 def _open_rating_range(page: ft.Page, start: int, end: int) -> None:
@@ -34,7 +35,7 @@ def _rating_range_view(
 ) -> ft.View:
     records = load_records()
     route = f"/statistics/ratings/range/{start}-{end}"
-    title = f"评分（{start}~{end}）"
+    title = f"评分（{range_label(start, end)}）"
 
     valid: list[tuple[Record, int]] = []
     for record in records:

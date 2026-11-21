@@ -7,6 +7,7 @@ from io import BytesIO
 import flet as ft
 from bangumi.ui.anim import animation
 from bangumi.ui.events import is_hover
+from bangumi.ui.interaction import hover_icon, hover_link, hover_zoom
 from PIL import Image as PILImage
 
 from bangumi.services.bgm_pic import cover_path
@@ -17,13 +18,13 @@ from bangumi.ui.colors import (
     foreground_color,
     link_hover_color,
 )
-from bangumi.ui.interaction import (
-    hover_zoom,
-)
 from bangumi.ui.layout import (
     page_padding,
 )
-from bangumi.views.navigation import AUTHOR, CATEGORY, ENTRY, TAG
+from bangumi.views.navigation import CATEGORY, ENTRY, TAG
+from bangumi.views.navigation.stack import register_resize_handler
+from bangumi.views.general.detail_person import open_person_page
+from bangumi.views.favorites import open_add_to_favorites_dialog
 from bangumi.views.widgets.image_preview import show_image_preview
 from bangumi.views.widgets.links import (
     BroadcastLink,
@@ -38,6 +39,7 @@ from bangumi.views.widgets.toast import copyable_title
 from bangumi.data.watched_data import (
     Record,
     load_records,
+    normalize_staff,
     split_authors,
     split_tags,
 )
@@ -104,51 +106,137 @@ def unique_authors(branches: list[Record]) -> list[str]:
     seen: set[str] = set()
     values: list[str] = []
     for record in branches:
-        for name in split_authors(record.get("author")):
+        staff = normalize_staff(record.get("staff"))
+        value = ""
+        # 优先级：原作 -> 总导演 -> 系列监督 -> 导演 -> 脚本；都没有则不贡献名字。
+        for key in ("原作", "总导演", "系列监督", "导演", "脚本"):
+            text = staff.get(key, "")
+            if text:
+                value = text
+                break
+        for name in split_authors(value):
             if name not in seen:
                 seen.add(name)
                 values.append(name)
     return values
 
 
-def entry_summary(branches: list[Record]) -> tuple[str, str]:
-    authors = " / ".join(unique_authors(branches))
-    categories = " / ".join(unique_values(branches, "category"))
-    first_line = " · ".join(
-        part for part in (authors, categories) if part
-    )
-    tags = " / ".join(unique_values(branches, "tag"))
-    return first_line, tags
-
-
 def merge_role_entries(
     branches: list[Record],
 ) -> list[tuple[str, list[str]]]:
     merged: dict[str, list[str]] = {}
+
+    def clean(cvs: list[str]) -> list[str]:
+        """去掉空值与「无」；只有「无」时保留一个「无」。"""
+        real: list[str] = []
+        had_none = False
+        for raw in cvs:
+            cv = str(raw or "").strip()
+            if not cv:
+                continue
+            if cv == "无":
+                had_none = True
+                continue
+            if cv not in real:
+                real.append(cv)
+        if not real and had_none:
+            return ["无"]
+        return real
+
     for record in branches:
         for name, cvs in parse_roles(
             str(record.get("role", "") or "")
         ):
             if not name:
                 continue
-            if name not in merged:
-                merged[name] = list(cvs)
-                continue
-            for cv in cvs:
-                if cv not in merged[name]:
-                    merged[name].append(cv)
+            current = merged.setdefault(name, [])
+            for cv in clean(cvs):
+                if cv not in current:
+                    current.append(cv)
+            # 有真实声优后，「无」不再参与显示。
+            if len(current) > 1 and "无" in current:
+                current.remove("无")
     return list(merged.items())
 
 
-def merge_roles(branches: list[Record]) -> list[str]:
-    lines: list[str] = []
-    for name, cvs in merge_role_entries(branches):
-        lines.append(
-            f"{name}({'/'.join(cvs)})"
-            if cvs
-            else name
+class _CoverFadeView:
+    """双层封面：新图淡入、旧图淡出。"""
+
+    def __init__(
+        self,
+        src: str,
+        width: float,
+        height: float,
+    ) -> None:
+        self.visible = 0
+        self.front = self._make_image(src, width, height, 1.0)
+        self.back = self._make_image(src, width, height, 0.0)
+        self.control = ft.Stack(
+            width=width,
+            height=height,
+            controls=[self.back, self.front],
         )
-    return lines
+
+    @staticmethod
+    def _make_image(
+        src: str,
+        width: float,
+        height: float,
+        opacity: float,
+    ) -> ft.Image:
+        return ft.Image(
+            src=src,
+            width=width,
+            height=height,
+            fit=ft.BoxFit.CONTAIN,
+            gapless_playback=True,
+            opacity=opacity,
+            animate_opacity=animation(
+                260, ft.AnimationCurve.EASE_OUT
+            ),
+        )
+
+    def show(
+        self,
+        src: str,
+        width: float,
+        height: float,
+    ) -> None:
+        current = self.front if self.visible == 0 else self.back
+        target = self.back if self.visible == 0 else self.front
+        target.src = src
+        target.width = width
+        target.height = height
+        target.opacity = 0
+        self.control.width = width
+        self.control.height = height
+        self.control.controls = [current, target]
+        try:
+            self.control.update()
+        except Exception:
+            pass
+        target.opacity = 1
+        current.opacity = 0
+        try:
+            target.update()
+        except Exception:
+            pass
+        try:
+            current.update()
+        except Exception:
+            pass
+        self.visible = 1 - self.visible
+
+    def resize(self, width: float, height: float) -> None:
+        self.control.width = width
+        self.control.height = height
+        for image in (self.front, self.back):
+            image.width = width
+            image.height = height
+        try:
+            self.control.update()
+        except Exception:
+            pass
 
 
 def build_entry_view(
@@ -320,40 +408,6 @@ def build_entry_view(
     cover_ratio = 1.0
     cover_pad = 24.0
 
-    def cover_image_control(
-        index: int,
-        width: float,
-        height: float,
-        key: str,
-    ) -> ft.Image:
-        return ft.Image(
-            src=covers[index],
-            width=width,
-            height=height,
-            fit=ft.BoxFit.CONTAIN,
-            gapless_playback=True,
-            key=key,
-        )
-
-    def make_cover_switcher(
-        width: float,
-        height: float,
-    ) -> ft.AnimatedSwitcher:
-        return ft.AnimatedSwitcher(
-            content=cover_image_control(
-                0, width, height, "cover-0-0"
-            ),
-            width=width,
-            height=height,
-            duration=ft.Duration(milliseconds=220),
-            switch_in_curve=ft.AnimationCurve.EASE_OUT,
-            switch_out_curve=ft.AnimationCurve.EASE_IN,
-            transition=ft.AnimatedSwitcherTransition.FADE,
-            animate_size=animation(
-                220, ft.AnimationCurve.EASE_OUT
-            ),
-        )
-
     if covers and compact:
         cover_width = max(
             120.0,
@@ -361,10 +415,9 @@ def build_entry_view(
         )
         first_ratio = _image_ratio(covers[0]) or 1.0
         cover_height = cover_width / first_ratio
-        cover_switcher = make_cover_switcher(
-            cover_width, cover_height
+        cover_view = _CoverFadeView(
+            covers[0], cover_width, cover_height
         )
-        cover_token = {"value": 0}
 
         def show_cover(index: int) -> None:
             width = max(
@@ -373,22 +426,10 @@ def build_entry_view(
             )
             ratio = _image_ratio(covers[index]) or 1.0
             height = width / ratio
-            cover_token["value"] += 1
-            cover_switcher.width = width
-            cover_switcher.height = height
-            cover_switcher.content = cover_image_control(
-                index,
-                width,
-                height,
-                f"cover-{index}-{cover_token['value']}",
-            )
-            try:
-                cover_switcher.update()
-            except Exception:
-                pass
+            cover_view.show(covers[index], width, height)
 
         cover_state["show"] = show_cover
-        image_control = cover_switcher
+        image_control = cover_view.control
         image_container = ft.GestureDetector(
             on_tap=next_cover,
             on_secondary_tap=previous_cover,
@@ -399,7 +440,7 @@ def build_entry_view(
                     if is_mobile(page)
                     else cover_tooltip()
                 ),
-                content=cover_switcher,
+                content=cover_view.control,
             ),
         )
         column_controls = [
@@ -423,28 +464,17 @@ def build_entry_view(
 
         if image_height >= min_height:
             cover_width = image_height * cover_ratio
-            cover_switcher = make_cover_switcher(
-                cover_width, image_height
+            cover_view = _CoverFadeView(
+                covers[0], cover_width, image_height
             )
-            cover_token = {"value": 0}
 
             def show_cover(index: int) -> None:
-                width = float(cover_switcher.width or 0)
-                height = float(cover_switcher.height or 0)
-                cover_token["value"] += 1
-                cover_switcher.content = cover_image_control(
-                    index,
-                    width,
-                    height,
-                    f"cover-{index}-{cover_token['value']}",
-                )
-                try:
-                    cover_switcher.update()
-                except Exception:
-                    pass
+                width = float(cover_view.control.width or 0)
+                height = float(cover_view.control.height or 0)
+                cover_view.show(covers[index], width, height)
 
             cover_state["show"] = show_cover
-            image_control = cover_switcher
+            image_control = cover_view.control
             image_container = ft.GestureDetector(
                 on_tap=next_cover,
                 on_secondary_tap=previous_cover,
@@ -455,7 +485,7 @@ def build_entry_view(
                         if is_mobile(page)
                         else cover_tooltip()
                     ),
-                    content=cover_switcher,
+                    content=cover_view.control,
                 ),
             )
             column_controls = [
@@ -480,25 +510,14 @@ def build_entry_view(
         else:
             fallback_height = max(120.0, page_h / 4)
             fallback_width = fallback_height * cover_ratio
-            cover_switcher = make_cover_switcher(
-                fallback_width, fallback_height
+            cover_view = _CoverFadeView(
+                covers[0], fallback_width, fallback_height
             )
-            cover_token = {"value": 0}
 
             def show_cover(index: int) -> None:
-                width = float(cover_switcher.width or 0)
-                height = float(cover_switcher.height or 0)
-                cover_token["value"] += 1
-                cover_switcher.content = cover_image_control(
-                    index,
-                    width,
-                    height,
-                    f"cover-{index}-{cover_token['value']}",
-                )
-                try:
-                    cover_switcher.update()
-                except Exception:
-                    pass
+                width = float(cover_view.control.width or 0)
+                height = float(cover_view.control.height or 0)
+                cover_view.show(covers[index], width, height)
 
             cover_state["show"] = show_cover
             cover_control = ft.GestureDetector(
@@ -511,7 +530,7 @@ def build_entry_view(
                         if is_mobile(page)
                         else cover_tooltip()
                     ),
-                    content=cover_switcher,
+                    content=cover_view.control,
                 ),
             )
             controls[0:0] = [
@@ -548,58 +567,46 @@ def build_entry_view(
     compact_image = compact and image_container is not None
 
     if image_container is not None and image_control is not None:
-        previous_resize = page.on_resize
-
         def on_resize(event: ft.ControlEvent) -> None:
-            if view in page.views and page.views[-1] is view:
-                page_w = float(page.width or 1000)
-                if compact_image:
-                    index = int(cover_state["index"])
-                    new_width = max(120.0, (page_w - 48) / 2)
-                    ratio = _image_ratio(covers[index]) or 1.0
-                    new_height = new_width / ratio
-                    if abs(float(image_control.width or 0) - new_width) > 1:
-                        image_control.width = new_width
-                        image_control.height = new_height
-                        child = getattr(image_control, "content", None)
-                        if isinstance(child, ft.Image):
-                            child.width = new_width
-                            child.height = new_height
-                        try:
-                            image_container.update()
-                        except Exception:
-                            pass
-                else:
-                    page_h = float(page.height or 800)
-                    text_need = min(
-                        520.0,
-                        max(320.0, page_w * 0.45),
-                    )
-                    available = (
-                        page_w - cover_pad * 2 - text_need - 16
-                    )
-                    height_by_width = available / cover_ratio
-                    max_height = page_h * 0.75
-                    min_height = page_h * 0.25
-                    height = min(max_height, height_by_width)
-                    if height < min_height:
-                        height = min_height
-                    new_width = height * cover_ratio
-                    if abs(float(image_control.height or 0) - height) > 1:
-                        image_control.height = height
-                        image_control.width = new_width
-                        child = getattr(image_control, "content", None)
-                        if isinstance(child, ft.Image):
-                            child.height = height
-                            child.width = new_width
-                        try:
-                            image_container.update()
-                        except Exception:
-                            pass
-            if previous_resize is not None:
-                previous_resize(event)
+            # 仅栈顶响应
+            if view not in page.views or page.views[-1] is not view:
+                return
+            page_w = float(page.width or 1000)
+            if compact_image:
+                index = int(cover_state["index"])
+                new_width = max(120.0, (page_w - 48) / 2)
+                ratio = _image_ratio(covers[index]) or 1.0
+                new_height = new_width / ratio
+                if abs(float(image_control.width or 0) - new_width) > 1:
+                    cover_view.resize(new_width, new_height)
+                    try:
+                        image_container.update()
+                    except Exception:
+                        pass
+            else:
+                page_h = float(page.height or 800)
+                text_need = min(
+                    520.0,
+                    max(320.0, page_w * 0.45),
+                )
+                available = (
+                    page_w - cover_pad * 2 - text_need - 16
+                )
+                height_by_width = available / cover_ratio
+                max_height = page_h * 0.75
+                min_height = page_h * 0.25
+                height = min(max_height, height_by_width)
+                if height < min_height:
+                    height = min_height
+                new_width = height * cover_ratio
+                if abs(float(image_control.height or 0) - height) > 1:
+                    cover_view.resize(new_width, height)
+                    try:
+                        image_container.update()
+                    except Exception:
+                        pass
 
-        page.on_resize = on_resize
+        register_resize_handler(page, route, on_resize)
 
     return view
 
@@ -621,14 +628,15 @@ def _summary_row(
         if index:
             controls.append(ui_text(" / ", size=18, color=foreground))
         controls.append(
-            DetailLink(
+            hover_link(
                 page,
-                records,
-                {**base, "author": value},
-                AUTHOR,
-                text=value,
-                size=18,
-                color=foreground,
+                ui_text(value, size=18, color=foreground),
+                foreground,
+                lambda event, n=value: open_person_page(
+                    page,
+                    records,
+                    n,
+                ),
             )
         )
 
@@ -701,6 +709,26 @@ def _branch_card(
         details.append(ui_text(rating, size=14, color=secondary))
     if not details:
         details.append(ui_text("", size=14, color=secondary))
+    else:
+        details.append(ui_text(" · ", size=14, color=secondary))
+
+    # 行尾 STAFF 入口：打开该分支的 STAFF 页面。
+    def _open_staff(event: ft.ControlEvent) -> None:
+        # 延迟导入，避免与 detail_staff 的循环引用。
+        from bangumi.views.general.detail_staff import (
+            open_staff_page,
+        )
+
+        open_staff_page(page, records, record)
+
+    details.append(
+        hover_link(
+            page,
+            ui_text("STAFF", size=14, color=secondary),
+            secondary,
+            _open_staff,
+        )
+    )
 
     anime_text = ui_text(
         anime,
@@ -751,6 +779,19 @@ def _branch_card(
                     size=14,
                     color=secondary,
                 ),
+            ),
+            hover_icon(
+                page,
+                ft.Icons.STAR_BORDER,
+                size=18,
+                color="#F48FB1",
+                tooltip="加入收藏夹",
+                on_click=(
+                    lambda event, r=record: (
+                        open_add_to_favorites_dialog(page, r)
+                    )
+                ),
+                padding=2,
             ),
             title_link,
         ],
@@ -925,12 +966,3 @@ def _with_opacity(
         return fallback
 
 
-def open_entry_page(
-    page: ft.Page,
-    records: list[Record],
-    record: Record,
-    *,
-    value: str | None = None,
-) -> None:
-    """打开某条记录的只读条目详情页。"""
-    open_detail(page, records, record, ENTRY, value=value)

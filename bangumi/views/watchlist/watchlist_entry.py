@@ -1,4 +1,4 @@
-"""Detail page for one 在追 item."""
+"""单条已追条目的详情页。"""
 
 from __future__ import annotations
 

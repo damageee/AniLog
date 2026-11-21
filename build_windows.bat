@@ -7,7 +7,7 @@ set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 
 set "BAT_RC=0"
-set APP_VERSION=0.1.0
+set APP_VERSION=0.2.0
 set PYTHON_VERSION=3.14
 set PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 set PIP_TIMEOUT=60

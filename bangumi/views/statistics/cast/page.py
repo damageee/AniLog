@@ -8,6 +8,7 @@ from bangumi.ui.theme import ui_text, ui_text_style
 from bangumi.ui.layout import page_padding, vertical_page
 from bangumi.views.statistics.common.shared import _open_statistics_page
 from .search import cast_search_view
+from .overview import open_cast_overview
 
 
 def cast_view(page: ft.Page) -> ft.View:
@@ -19,7 +20,12 @@ def cast_view(page: ft.Page) -> ft.View:
                 page,
                 cast_search_view,
             ),
-        )
+        ),
+        ft.Button(
+            content=ui_text("总览", size=18),
+            style=ft.ButtonStyle(text_style=ui_text_style(size=18)),
+            on_click=lambda event: open_cast_overview(page),
+        ),
     ]
     view = ft.View(
         route="/statistics/cast",

@@ -1,10 +1,10 @@
-"""已阅页面的跨刷新状态。"""
+"""已阅页面的跨刷新状态（按 View 实例保存）。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import flet as ft
+from bangumi.ui.view_state import state_for
 
 
 @dataclass
@@ -13,14 +13,22 @@ class WatchedViewState:
 
     current_page: int = 0
     horizontal_offset: float = 0.0
+    horizontal_max_extent: float = 0.0
     vertical_offset: float = 0.0
-VIEW_STATES: dict[int, tuple[ft.Page, WatchedViewState]] = {}
-def view_state(page: ft.Page) -> WatchedViewState:
-    key = id(page)
-    entry = VIEW_STATES.get(key)
-    if entry is not None and entry[0] is page:
-        return entry[1]
+    vertical_owner: str = "page"
+    vertical_max_extent: float = 0.0
 
-    state = WatchedViewState()
-    VIEW_STATES[key] = (page, state)
+
+def bind_view_state(view: object, state: WatchedViewState) -> None:
+    """把浏览状态绑定到已阅页 View。"""
+    state_for(view)["watched"] = state
+
+
+def view_state(view: object) -> WatchedViewState:
+    """读取视图对应的已阅状态；不存在时创建默认值。"""
+    data = state_for(view)
+    state = data.get("watched")
+    if not isinstance(state, WatchedViewState):
+        state = WatchedViewState()
+        data["watched"] = state
     return state

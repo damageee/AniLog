@@ -15,13 +15,11 @@ from typing import Callable
 
 import flet as ft
 
-from bangumi.views.general.detail_author import build_author_view
 from bangumi.views.general.detail_broadcast_point import (
     build_broadcast_point_view,
 )
 from bangumi.views.general.detail_cast import build_cast_view
 from bangumi.views.navigation.detail_kinds import (
-    AUTHOR,
     BROADCAST,
     CAST,
     CATEGORY,
@@ -65,6 +63,7 @@ SECTION_PAGES: tuple[PageInfo, ...] = (
     PageInfo(PageCategory.SECTION, "已阅", "/watched"),
     PageInfo(PageCategory.SECTION, "已追", "/watchlist"),
     PageInfo(PageCategory.SECTION, "追季", "/season"),
+    PageInfo(PageCategory.SECTION, "收藏", "/favorites"),
     PageInfo(PageCategory.SECTION, "统计", "/statistics"),
     PageInfo(PageCategory.SECTION, "设置", "/settings"),
 )
@@ -72,7 +71,6 @@ SECTION_PAGES: tuple[PageInfo, ...] = (
 DETAIL_KINDS: tuple[DetailKind, ...] = (
     ENTRY,
     CATEGORY,
-    AUTHOR,
     BROADCAST,
     QUARTER,
     QUARTER_WORKS,
@@ -102,7 +100,6 @@ DetailBuilder = Callable[
 DETAIL_BUILDERS: dict[str, DetailBuilder] = {
     ENTRY.key: build_entry_view,
     CATEGORY.key: build_category_view,
-    AUTHOR.key: build_author_view,
     BROADCAST.key: build_broadcast_point_view,
     QUARTER_WORKS.key: build_quarter_works_view,
     ROLE.key: build_role_view,

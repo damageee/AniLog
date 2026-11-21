@@ -8,7 +8,7 @@ from bangumi.services.bgm_persons import get_persons
 from bangumi.views.watched.fill_table.fields import needed_keys
 
 BASE_KEYS = frozenset({"规格", "类型", "TAG", "放送", "评分"})
-PERSON_KEYS = frozenset({"作者", "制作公司"})
+PERSON_KEYS = frozenset({"STAFF", "制作公司"})
 
 
 def fetch_subject_info(

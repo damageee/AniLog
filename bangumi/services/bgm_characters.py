@@ -1,10 +1,10 @@
-"""Fetch and normalize the characters of one Bangumi subject.
+"""获取并规范化某个 Bangumi 条目的角色。
 
-Usage:
+用法：
     python -m bangumi.services.bgm_characters 225604
 
-Only /subjects/{id}/characters is used. Output keeps the previous format:
-one "角色(CV)" line per 主角/配角, missing CV shown as "(无)".
+仅使用 /subjects/{id}/characters。输出保持原有格式：
+每个 主角/配角 一行「角色(CV)」，缺少 CV 时显示「(无)」。
 """
 
 from __future__ import annotations

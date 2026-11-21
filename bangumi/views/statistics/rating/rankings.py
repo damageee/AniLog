@@ -10,6 +10,7 @@ from bangumi.ui.theme import (
     ui_text,
 )
 from bangumi.ui.text_metrics import text_width
+from bangumi.views.navigation.stack import register_resize_handler
 from bangumi.views.general.bar_chart import (
     random_bar_colors,
 )
@@ -275,30 +276,54 @@ def _rating_bars_view(
                 except Exception:
                     pass
 
-            bar.on_hover = on_bar_hover
-            bar.on_click = (
-                lambda event, r=record: open_detail(
-                    page,
-                    records,
-                    r,
-                    ENTRY,
-                )
-            )
-            bar.tooltip = None if is_mobile(page) else name
             bar_controls.append((bar, score))
+            text_w = float(text_width(str(score), size=12))
+            full = available_width()
+            # 命中区取柱子实际长度；只有短于 1/4 完整长度时才扩大。
+            hit_width = (
+                bar_width if bar_width >= full / 4.0 else full / 4.0
+            )
+            row_width = max(
+                hit_width,
+                bar_width + (8.0 + text_w if text_w else 0.0),
+            )
+            hit_layer = ft.Container(
+                width=hit_width,
+                height=22,
+                bgcolor=ft.Colors.TRANSPARENT,
+                tooltip=None if is_mobile(page) else name,
+                on_hover=lambda event, b=bar: on_bar_hover(event, b),
+                on_click=(
+                    lambda event, r=record: open_detail(
+                        page,
+                        records,
+                        r,
+                        ENTRY,
+                    )
+                ),
+            )
+            bar_row = ft.Stack(
+                width=row_width,
+                height=22,
+                clip_behavior=ft.ClipBehavior.NONE,
+                controls=[
+                    bar,
+                    hit_layer,
+                    # 分值文字绝对定位，保持 8px 间距且不参与命中。
+                    ft.Container(
+                        left=bar_width + 8.0,
+                        top=0,
+                        height=22,
+                        ignore_interactions=True,
+                        alignment=ft.Alignment.CENTER_LEFT,
+                        content=ui_text(str(score), size=12, color=fg),
+                    ),
+                ],
+            )
             column = ft.Column(
                 spacing=2,
                 controls=[
-                    ft.Row(
-                        spacing=8,
-                        vertical_alignment=(
-                            ft.CrossAxisAlignment.CENTER
-                        ),
-                        controls=[
-                            bar,
-                            ui_text(str(score), size=12, color=fg),
-                        ],
-                    ),
+                    bar_row,
                     ui_text(
                         name,
                         size=11,
@@ -443,19 +468,17 @@ def _rating_bars_view(
             )
         ],
     )
-    previous_resize = page.on_resize
+    def on_resize(event=None) -> None:
+        # 仅栈顶响应
+        if view not in page.views or page.views[-1] is not view:
+            return
+        width = available_width()
+        for bar, score in bar_controls:
+            bar.width = max(4, int(width * score / 100))
+        try:
+            holder.update()
+        except Exception:
+            pass
 
-    def on_resize(event: ft.ControlEvent) -> None:
-        if view in page.views and page.views[-1] is view:
-            width = available_width()
-            for bar, score in bar_controls:
-                bar.width = max(4, int(width * score / 100))
-            try:
-                holder.update()
-            except Exception:
-                pass
-        if previous_resize is not None:
-            previous_resize(event)
-
-    page.on_resize = on_resize
+    register_resize_handler(page, route, on_resize)
     return view

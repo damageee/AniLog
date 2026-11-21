@@ -54,6 +54,67 @@ def parse_iso_date(value: str) -> dt.date | None:
     return None
 
 
+def _canonical_date(d: dt.date) -> str:
+    return f"{d.year:04d}年{d.month:02d}月{d.day:02d}日"
+
+
+def normalize_broadcast(value: str) -> str:
+    """规范化放送日期；非法值返回空字符串。"""
+    text = _TIME_SUFFIX.sub("", str(value or "")).strip()
+    if not text:
+        return ""
+    # 区间
+    if "~" in text or "～" in text:
+        parts = re.split(r"[~～]", text)
+        if len(parts) != 2:
+            return ""
+        start = parse_iso_date(parts[0])
+        if start is None:
+            return ""
+        end = parse_iso_date(parts[1])
+        if end is None:
+            m = re.match(
+                r"^\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*$",
+                parts[1],
+            )
+            if m is None:
+                return ""
+            mo, da = int(m.group(1)), int(m.group(2))
+            try:
+                end = dt.date(start.year, mo, da)
+            except ValueError:
+                return ""
+            if end < start:
+                try:
+                    end = dt.date(start.year + 1, mo, da)
+                except ValueError:
+                    return ""
+        if end < start:
+            return ""
+        return f"{_canonical_date(start)}~{_canonical_date(end)}"
+    # 多个日期 / 单日
+    tokens = [
+        t for t in re.split(r"[\s,，、;；|]+", text) if t
+    ]
+    if not tokens:
+        return ""
+    dates: list[dt.date] = []
+    for token in tokens:
+        parsed = parse_iso_date(token)
+        if parsed is None:
+            return ""  # 任一段非法 → 整条清空
+        dates.append(parsed)
+    return " ".join(_canonical_date(d) for d in dates)
+
+
+def normalize_completion(value: str) -> str:
+    """规范化补完日期；非法值返回空字符串。"""
+    parsed = parse_iso_date(str(value or ""))
+    if parsed is None:
+        return ""
+    return f"{parsed.year:04d}.{parsed.month:02d}.{parsed.day:02d}"
+
+
 def format_display_date(value: object) -> str:
     text = str(value or "").strip()
     if not text:

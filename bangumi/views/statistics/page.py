@@ -18,6 +18,9 @@ from bangumi.ui.interaction import back_icon
 from bangumi.views.statistics.broadcast import (
     broadcast_view,
 )
+from bangumi.views.statistics.annual import (
+    annual_view,
+)
 from bangumi.views.statistics.cast import (
     cast_view,
 )
@@ -36,11 +39,17 @@ from bangumi.views.statistics.rating import (
 from bangumi.views.statistics.best_records import (
     records_view,
 )
+from bangumi.views.statistics.coverwall import (
+    coverwall_view,
+)
 from bangumi.views.statistics.common.shared import (
     _open_statistics_page,
 )
 from bangumi.views.statistics.studios import (
     studios_view,
+)
+from bangumi.views.statistics.staff import (
+    staff_view,
 )
 from bangumi.views.statistics.tags import (
     tags_view,
@@ -97,9 +106,12 @@ STATISTICS_PAGES: tuple[
     ("放送", broadcast_view),
     ("旅途", journey_view),
     ("标签", tags_view),
+    ("班底", staff_view),
     ("制作", studios_view),
     ("声优", cast_view),
     ("评分", rating_view),
+    ("封面", coverwall_view),
+    ("年报", annual_view),
     ("纪录", records_view),
     ("数据", data_view),
 )

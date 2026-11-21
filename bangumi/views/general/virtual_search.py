@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Callable
 
 import flet as ft
@@ -92,6 +93,14 @@ def wrap_search_row(
             pass
 
     holder.on_hover = on_hover
+
+    def reset_search_hover() -> None:
+        # 只改属性，不 update：此时视图正在卸载。
+        holder.bgcolor = None
+
+    from bangumi.ui.hover_state import register
+
+    register(holder, reset_search_hover)
     return holder
 
 
@@ -121,11 +130,15 @@ def virtual_search_page(
         "start": -1,
         "first": -1,
         "end": -1,
+        # 滚动防抖：只记录最新位置，停手 30ms 后重建一次。
+        "scroll_token": 0,
+        "scroll_pixels": 0.0,
+        "scroll_scheduled": False,
     }
 
     def visible_rows() -> int:
         height = max(200.0, float(page.height or 800) - 200)
-        return window_size(height, ROW_HEIGHT, extra=6)
+        return window_size(height, ROW_HEIGHT, extra=12)
 
     column = ft.Column(
         expand=True,
@@ -164,7 +177,7 @@ def virtual_search_page(
             total,
             window,
             ROW_HEIGHT,
-            overscan=2,
+            overscan=6,
         )
         last = min(total, last_inclusive + 1)
         if not force and state["first"] <= first and last <= state["end"]:
@@ -207,9 +220,27 @@ def virtual_search_page(
         except Exception:
             pass
 
+    async def _debounced_rebuild() -> None:
+        try:
+            while True:
+                token = state["scroll_token"]
+                await asyncio.sleep(0.03)
+                if token == state["scroll_token"]:
+                    break
+            # 防抖期间保留旧 controls，只用最后一次位置重建。
+            rebuild(float(state["scroll_pixels"]))
+        finally:
+            state["scroll_scheduled"] = False
+
     def on_scroll(event: ft.OnScrollEvent) -> None:
-        pixels = float(getattr(event, "pixels", 0) or 0)
-        rebuild(pixels)
+        state["scroll_pixels"] = float(
+            getattr(event, "pixels", 0) or 0
+        )
+        state["scroll_token"] += 1
+        if state["scroll_scheduled"]:
+            return
+        state["scroll_scheduled"] = True
+        page.run_task(_debounced_rebuild)
 
     column.on_scroll = on_scroll
     scroll_memory.remember(page, route, "list", column)
@@ -233,6 +264,9 @@ def virtual_search_page(
         state["start"] = -1
         state["first"] = -1
         state["end"] = -1
+        # 使挂起的滚动防抖失效，避免按旧位置重建。
+        state["scroll_pixels"] = 0.0
+        state["scroll_token"] += 1
         rebuild(0.0, force=True)
         page.run_task(_reset_scroll)
 
