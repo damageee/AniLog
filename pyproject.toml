@@ -4,6 +4,8 @@ version = "0.2.0"
 description = "A Flet desktop app for tracking watched anime."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 dependencies = [
     "flet==1.0.5",
     "openpyxl==3.1.5",

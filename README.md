@@ -234,4 +234,13 @@ AniLog/
 
 注：因有风险违反 `AniList API` 使用条款，将不使用 `AniList API` 来获取数据保存。
 
-许可：待补充。
+许可：本项目采用 `GNU General Public License v3.0 or later（GPL-3.0-or-later）`。
+完整条款见根目录 `LICENSE`。
+
+第三方依赖遵循各自许可证，主要包括：
+```text
+- Flet：Apache-2.0
+- openpyxl：MIT
+- Pillow：MIT-CMU
+- pykakasi：GPL-3.0-or-later
+```
