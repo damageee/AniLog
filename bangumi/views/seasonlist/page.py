@@ -41,7 +41,9 @@ from bangumi.views.seasonlist.upcoming_overview import SeasonUpcomingPage
 from bangumi.views.seasonlist.utils import (
     apply_label_counts,
     current_season,
+    hide_loading,
     quarter_counts,
+    show_loading,
 )
 from bangumi.views.widgets.progress_bar import (
     build_progress_bar,
@@ -57,6 +59,7 @@ class SeasonPage:
         self.quarters: list[dict] = []
         self._quarter_buttons: list[tuple] = []
         self._upcoming_loading = False
+        self._upcoming_ring = None
         self.upcoming_button: ft.Button | None = None
         self.body = ft.Column(
             spacing=16,
@@ -190,16 +193,22 @@ class SeasonPage:
         if self.upcoming_button is not None:
             self.upcoming_button.disabled = True
             self.upcoming_button.update()
+        self._upcoming_ring = show_loading(self.page)
         self.page.run_task(self._run_upcoming)
 
     async def _run_upcoming(self) -> None:
         categories = None
+        ring = self._upcoming_ring
+        self._upcoming_ring = None
         try:
-            categories = await asyncio.to_thread(
-                fetch_future_categories
-            )
-        except Exception:
-            categories = None
+            try:
+                categories = await asyncio.to_thread(
+                    fetch_future_categories
+                )
+            except Exception:
+                categories = None
+        finally:
+            hide_loading(self.page, ring)
         self._upcoming_loading = False
         if self.upcoming_button is not None:
             self.upcoming_button.disabled = False

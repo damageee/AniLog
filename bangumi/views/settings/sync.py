@@ -459,7 +459,7 @@ def _show_sync_summary(
         f"来源设备：{source}",
         f"文件数：{item_count}",
         f"其中：JSON {file_count} 个，封面图 {cover_count} 张",
-        f"版本：{document.get('version', '')}",
+        f"版本：{document.get('app_version') or document.get('version', '')}",
     ]
     if aborted:
         lines.append(

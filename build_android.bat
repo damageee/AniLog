@@ -7,9 +7,7 @@ set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 
 set "BAT_RC=0"
-set APP_VERSION=0.2.0
-set APP_VERSION_LABEL=v2.0
-set EXCLUDES=storage chat_history.txt AGENTS.md Anilog_config.json bangumi.xlsx bangumi_import.xlsx fullfill.xlsx .cursor .gitignore AniLog.spec README.md requirements.txt build_windows.bat build_android.bat pack_windows.bat pack_windows_folder.bat dist __pycache__ icon.jpg icon.png icon_android.png tools
+set EXCLUDES=storage chat_history.txt AGENTS.md Anilog_config.json bangumi.xlsx bangumi_import.xlsx fullfill.xlsx .cursor .gitignore AniLog.spec README.md requirements.txt build_windows.bat build_android.bat pack_windows.bat pack_windows_folder.bat dist __pycache__ icon.jpg icon.png icon_android.png tools testfile backup build_pack_windows .venv build release releases .opencode .vscode .readme .git
 
 rem --- HTTP proxy (Clash / v2rayN mixed port) ---
 set PROXY_HOST=127.0.0.1
@@ -61,6 +59,21 @@ if not exist ".venv\Scripts\python.exe" (
 call ".venv\Scripts\activate.bat"
 if errorlevel 1 (
     echo [ERROR] Could not activate .venv.
+    goto :fail
+)
+
+python -c "from bangumi.version import APP_VERSION; print(APP_VERSION)" > "%TEMP%\anilog_app_version.txt" 2>nul
+set /p APP_VERSION=<"%TEMP%\anilog_app_version.txt"
+del "%TEMP%\anilog_app_version.txt" >nul 2>nul
+python -c "from bangumi.version import APP_VERSION_LABEL; print(APP_VERSION_LABEL)" > "%TEMP%\anilog_app_version_label.txt" 2>nul
+set /p APP_VERSION_LABEL=<"%TEMP%\anilog_app_version_label.txt"
+del "%TEMP%\anilog_app_version_label.txt" >nul 2>nul
+if not defined APP_VERSION (
+    echo [ERROR] Could not read APP_VERSION from bangumi.version.
+    goto :fail
+)
+if not defined APP_VERSION_LABEL (
+    echo [ERROR] Could not read APP_VERSION_LABEL from bangumi.version.
     goto :fail
 )
 

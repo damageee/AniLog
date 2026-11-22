@@ -52,7 +52,12 @@ from bangumi.views.seasonlist.constants import (
     ADD_COLOR,
     IMPORT_COLOR,
 )
-from bangumi.views.seasonlist.utils import percent, quarter_counts
+from bangumi.views.seasonlist.utils import (
+    hide_loading,
+    percent,
+    quarter_counts,
+    show_loading,
+)
 from bangumi.views.widgets.progress_bar import (
     build_progress_bar,
     build_stats_row,
@@ -78,6 +83,7 @@ class SeasonTargetPage:
         self.on_changed = on_changed
         self.quarter: dict = {}
         self._importing = False
+        self._import_ring = None
         self.import_button: ft.Button | None = None
         self.body = ft.Column(
             spacing=6,
@@ -265,6 +271,8 @@ class SeasonTargetPage:
                         self.page,
                         record={"anime": n, "entry": n},
                         on_save=self._save_to_watched,
+                        prefill_anime=n,
+                        auto_search=True,
                     ),
                 ),
                 self._action_icon(
@@ -374,6 +382,8 @@ class SeasonTargetPage:
                         self.page,
                         record={"anime": n, "entry": n},
                         on_save=self._save_to_watched,
+                        prefill_anime=n,
+                        auto_search=True,
                     ),
                 ),
                 ft.PopupMenuItem(
@@ -609,24 +619,30 @@ class SeasonTargetPage:
         if self.import_button is not None:
             self.import_button.disabled = True
             self.import_button.update()
+        self._import_ring = show_loading(self.page)
         self.page.run_task(self._run_import)
 
     async def _run_import(self) -> None:
         added: int | None = None
+        ring = self._import_ring
+        self._import_ring = None
         try:
-            titles = await asyncio.to_thread(
-                fetch_season_titles,
-                self.year,
-                self.index,
-            )
-            added = await asyncio.to_thread(
-                add_items,
-                self.year,
-                self.index,
-                titles,
-            )
-        except Exception:
-            added = None
+            try:
+                titles = await asyncio.to_thread(
+                    fetch_season_titles,
+                    self.year,
+                    self.index,
+                )
+                added = await asyncio.to_thread(
+                    add_items,
+                    self.year,
+                    self.index,
+                    titles,
+                )
+            except Exception:
+                added = None
+        finally:
+            hide_loading(self.page, ring)
         self._importing = False
         visible = self.view in self.page.views
         if visible:

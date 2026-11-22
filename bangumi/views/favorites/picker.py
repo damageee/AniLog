@@ -6,9 +6,11 @@ import flet as ft
 
 from bangumi.data.favorites import (
     LIKES_ID,
+    LIKES_NAME,
     add_item,
     folder_colors,
     load_favorites,
+    remove_item_by_uid,
     save_favorites,
 )
 from bangumi.data.watched_data import Record, record_title
@@ -16,6 +18,7 @@ from bangumi.ui.colors import foreground_color
 from bangumi.ui.theme import ui_text
 from bangumi.views.favorites.page import open_folder_dialog
 from bangumi.views.seasonlist.constants import ADD_COLOR
+from bangumi.views.widgets.toast import show_toast
 
 
 def open_add_to_favorites_dialog(
@@ -38,12 +41,21 @@ def open_add_to_favorites_dialog(
             if isinstance(item, dict)
         )
 
-    def add_to(folder_id: str) -> None:
+    def add_to(folder_id: str, folder_name: str) -> None:
         # 重新读取，避免用旧副本覆盖其它改动。
         fresh = load_favorites()
         add_item(fresh, folder_id, uid, name)
         save_favorites(fresh)
         page.pop_dialog()
+        show_toast(page, f"成功添加到「{folder_name}」收藏夹")
+
+    def remove_from(folder_id: str, folder_name: str) -> None:
+        """从收藏夹移出当前条目。"""
+        fresh = load_favorites()
+        remove_item_by_uid(fresh, folder_id, uid)
+        save_favorites(fresh)
+        page.pop_dialog()
+        show_toast(page, f"已从「{folder_name}」收藏夹移除")
 
     def create_folder(event: ft.ControlEvent) -> None:
         def saved(folder: dict) -> None:
@@ -55,6 +67,10 @@ def open_add_to_favorites_dialog(
             add_item(fresh, folder_id, uid, name)
             save_favorites(fresh)
             page.pop_dialog()
+            show_toast(
+                page,
+                f"成功添加到「{folder.get('name') or '未命名'}」收藏夹",
+            )
 
         open_folder_dialog(
             page,
@@ -92,8 +108,11 @@ def open_add_to_favorites_dialog(
             bgcolor=(
                 disabled_bg if likes_disabled else ADD_COLOR
             ),
-            disabled=likes_disabled,
-            on_click=lambda event: add_to(LIKES_ID),
+            on_click=(
+                lambda event: remove_from(LIKES_ID, LIKES_NAME)
+                if likes_disabled
+                else add_to(LIKES_ID, LIKES_NAME)
+            ),
         ),
     ]
 
@@ -124,9 +143,14 @@ def open_add_to_favorites_dialog(
                     bgcolor=(
                         disabled_bg if disabled else bg
                     ),
-                    disabled=disabled,
                     on_click=(
-                        lambda event, fid=folder_id: add_to(fid)
+                        lambda event, fid=folder_id, fname=str(
+                            folder.get("name") or "未命名"
+                        ), dis=disabled: (
+                            remove_from(fid, fname)
+                            if dis
+                            else add_to(fid, fname)
+                        )
                     ),
                 )
             )

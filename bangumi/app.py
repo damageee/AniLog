@@ -410,6 +410,15 @@ def main(page: ft.Page) -> None:
     page.theme_mode = (
         ft.ThemeMode.DARK if dark_mode else ft.ThemeMode.LIGHT
     )
+    # 中文 locale：让 Flutter 默认返回按钮 tooltip 显示「返回」。
+    try:
+        zh = ft.Locale(language_code="zh", country_code="CN")
+        page.locale_configuration = ft.LocaleConfiguration(
+            supported_locales=[zh],
+            current_locale=zh,
+        )
+    except Exception:
+        pass
     page.bgcolor = ft.Colors.BLACK if dark_mode else ft.Colors.WHITE
     if page.platform == ft.PagePlatform.WINDOWS:
         page.window.icon = "/pic/icon.ico"

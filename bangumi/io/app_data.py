@@ -19,8 +19,13 @@ import flet as ft
 
 from bangumi.data.preferences import Preferences
 from bangumi.core.storage import storage_directory
+from bangumi.version import (
+    APP_VERSION,
+    COMPAT_VERSIONS,
+    DATA_VERSION,
+    WIRE_VERSION,
+)
 
-APP_VERSION = "0.2.0"
 FORMAT_NAME = "anilog-config"
 DISCOVERY_PORT = 47823
 PROTOCOL_VERSION = 2
@@ -110,7 +115,9 @@ def build_export_document(
 ) -> dict[str, object]:
     return {
         "format": FORMAT_NAME,
-        "version": APP_VERSION,
+        "version": WIRE_VERSION,
+        "app_version": APP_VERSION,
+        "data_version": DATA_VERSION,
         "exported_at": (
             exported_at
             or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -144,10 +151,22 @@ def validate_export_document(
     """校验导出的配置并返回其安全的文件内容。"""
     if not isinstance(document, dict):
         raise ValueError("配置文件的顶层必须是 JSON 对象")
-    if document.get("version") != APP_VERSION:
-        raise ValueError("数据与应用版本不匹配")
     if document.get("format") != FORMAT_NAME:
         raise ValueError("这不是 AniLog 应用数据导出文件")
+    raw = document.get("data_version")
+    if raw is None:
+        if (
+            str(document.get("version") or "")
+            not in COMPAT_VERSIONS
+        ):
+            raise ValueError("数据格式版本不匹配")
+    else:
+        try:
+            data_version = int(raw)
+        except (TypeError, ValueError):
+            raise ValueError("数据格式版本不匹配")
+        if data_version != DATA_VERSION:
+            raise ValueError("数据格式版本不匹配")
     files = document.get("files")
     if not isinstance(files, dict):
         raise ValueError("配置文件的 files 字段必须是对象")
@@ -547,10 +566,26 @@ def pull_document(
             manifest = response.get("manifest")
             if not isinstance(manifest, dict):
                 raise SyncError("invalid", "对端清单无效")
-            if manifest.get("version") != APP_VERSION:
-                raise SyncError("version", "版本不匹配")
             if manifest.get("format") != FORMAT_NAME:
                 raise SyncError("invalid", "对端清单格式无效")
+            raw = manifest.get("data_version")
+            if raw is None:
+                if (
+                    str(manifest.get("version") or "")
+                    not in COMPAT_VERSIONS
+                ):
+                    raise SyncError(
+                        "version", "数据格式版本不匹配"
+                    )
+            else:
+                try:
+                    manifest_version = int(raw)
+                except (TypeError, ValueError):
+                    manifest_version = -1
+                if manifest_version != DATA_VERSION:
+                    raise SyncError(
+                        "version", "数据格式版本不匹配"
+                    )
             items = manifest.get("items")
             if not isinstance(items, list):
                 raise SyncError("invalid", "对端清单无效")
@@ -611,7 +646,9 @@ def pull_document(
 
     document = {
         "format": FORMAT_NAME,
-        "version": APP_VERSION,
+        "version": WIRE_VERSION,
+        "app_version": APP_VERSION,
+        "data_version": DATA_VERSION,
         "exported_at": str(manifest.get("exported_at") or ""),
         "files": files,
         "covers": covers,
@@ -801,7 +838,9 @@ class ShareServer:
             "%Y-%m-%d %H:%M:%S"
         )
         manifest = {
-            "version": APP_VERSION,
+            "version": WIRE_VERSION,
+            "app_version": APP_VERSION,
+            "data_version": DATA_VERSION,
             "format": FORMAT_NAME,
             "exported_at": exported_at,
             "items": [

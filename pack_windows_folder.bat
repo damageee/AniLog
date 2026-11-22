@@ -8,8 +8,6 @@ set "PYTHONIOENCODING=utf-8"
 set "BAT_RC=0"
 
 set APP_NAME=AniLog
-set APP_VERSION=0.2.0
-set APP_VERSION_LABEL=v2.0
 set PIP_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 set PIP_TIMEOUT=60
 set PYTHON=.venv\Scripts\python.exe
@@ -37,6 +35,21 @@ if not exist "%FLET%" (
 )
 if not exist "assets" (
     echo [ERROR] assets directory not found.
+    goto :fail
+)
+
+"%PYTHON%" -c "from bangumi.version import APP_VERSION; print(APP_VERSION)" > "%TEMP%\anilog_app_version.txt" 2>nul
+set /p APP_VERSION=<"%TEMP%\anilog_app_version.txt"
+del "%TEMP%\anilog_app_version.txt" >nul 2>nul
+"%PYTHON%" -c "from bangumi.version import APP_VERSION_LABEL; print(APP_VERSION_LABEL)" > "%TEMP%\anilog_app_version_label.txt" 2>nul
+set /p APP_VERSION_LABEL=<"%TEMP%\anilog_app_version_label.txt"
+del "%TEMP%\anilog_app_version_label.txt" >nul 2>nul
+if not defined APP_VERSION (
+    echo [ERROR] Could not read APP_VERSION from bangumi.version.
+    goto :fail
+)
+if not defined APP_VERSION_LABEL (
+    echo [ERROR] Could not read APP_VERSION_LABEL from bangumi.version.
     goto :fail
 )
 
