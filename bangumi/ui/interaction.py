@@ -346,11 +346,6 @@ def scroll_bottom_action(
         "pixels": 0.0,
     }
     holder: ft.Container | None = None
-    children = [
-        child
-        for child in (getattr(scroller, "controls", None) or [])
-        if isinstance(child, ft.Control)
-    ]
     spacing = float(getattr(scroller, "spacing", 0) or 0)
     size_state: dict[str, float | None] = {"viewport": None}
     child_heights: dict[int, float] = {}
@@ -392,14 +387,54 @@ def scroll_bottom_action(
 
     def evaluate_sizes() -> None:
         viewport = size_state["viewport"]
-        if viewport is None or not children:
+        current = [
+            child
+            for child in (getattr(scroller, "controls", None) or [])
+            if isinstance(child, ft.Control)
+        ]
+        if not current:
+            apply_extent(0)
             return
-        if any(id(child) not in child_heights for child in children):
+        if viewport is None:
+            return
+        if any(id(child) not in child_heights for child in current):
             return
         total = sum(
-            child_heights[id(child)] for child in children
-        ) + spacing * max(0, len(children) - 1)
+            child_heights[id(child)] for child in current
+        ) + spacing * max(0, len(current) - 1)
         apply_extent(total - float(viewport))
+
+    def refresh_visibility() -> None:
+        """按当前子控件重新绑定尺寸监听并计算显隐。"""
+        current = [
+            child
+            for child in (getattr(scroller, "controls", None) or [])
+            if isinstance(child, ft.Control)
+        ]
+        for child in current:
+            if getattr(child, "_scroll_bottom_bound", False):
+                continue
+            previous_child = getattr(
+                child, "on_size_change", None
+            )
+
+            def update_child(
+                event: ft.ControlEvent,
+                target=child,
+                previous_handler=previous_child,
+            ) -> None:
+                if not is_top():
+                    return
+                height = getattr(event, "height", None)
+                if isinstance(height, (int, float)):
+                    child_heights[id(target)] = float(height)
+                evaluate_sizes()
+                if callable(previous_handler):
+                    previous_handler(event)
+
+            child.on_size_change = update_child
+            child._scroll_bottom_bound = True
+        evaluate_sizes()
 
     def on_scroll(event: ft.OnScrollEvent) -> None:
         # 非栈顶时直接交给原处理器并返回，避免无谓计算。
@@ -430,6 +465,7 @@ def scroll_bottom_action(
             on_click=lambda event: page.run_task(to_bottom),
         ),
     )
+    holder._scroll_bottom_refresh = refresh_visibility
 
     scroller.on_scroll = on_scroll
 
@@ -459,27 +495,50 @@ def scroll_bottom_action(
 
     scroller.on_size_change = on_scroller_size
 
-    for child in children:
-        previous_child = getattr(child, "on_size_change", None)
-
-        def update_child(
-            event: ft.ControlEvent,
-            target=child,
-            previous_handler=previous_child,
-        ) -> None:
-            # 非栈顶视图跳过高度统计。
-            if not is_top():
-                return
-            height = getattr(event, "height", None)
-            if isinstance(height, (int, float)):
-                child_heights[id(target)] = float(height)
-            evaluate_sizes()
-            if callable(previous_handler):
-                previous_handler(event)
-
-        child.on_size_change = update_child
+    refresh_visibility()
 
     return holder
+
+
+def set_scroll_bottom_visible(
+    page: ft.Page,
+    view: ft.View,
+    visible: bool | None = None,
+) -> None:
+    """按内容状态强制显示/隐藏，或重算滚动到底部箭头。"""
+    appbar = getattr(view, "appbar", None)
+    actions = list(getattr(appbar, "actions", None) or [])
+    for action in actions:
+        data = getattr(action, "data", None)
+        if data is None:
+            data = getattr(
+                getattr(action, "content", None),
+                "data",
+                None,
+            )
+        if data != SCROLL_BOTTOM_MARKER:
+            continue
+        if visible is None:
+            refresh = getattr(
+                action, "_scroll_bottom_refresh", None
+            )
+            if callable(refresh):
+                refresh()
+            return
+        opacity = 1.0 if visible else 0.0
+        ignore = not visible
+        if (
+            getattr(action, "opacity", None) == opacity
+            and getattr(action, "ignore_interactions", None) == ignore
+        ):
+            return
+        action.opacity = opacity
+        action.ignore_interactions = ignore
+        try:
+            action.update()
+        except Exception:
+            pass
+        return
 
 
 def tooltip_colors(page: ft.Page) -> tuple[str, str]:

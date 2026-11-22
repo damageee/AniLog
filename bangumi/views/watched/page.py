@@ -458,6 +458,9 @@ class WatchedPage(TableMixin, SearchMixin, FilterMixin, PaginationMixin, Options
                 self.search_field.value = self.search_query
             # 新骨架：工具栏卡片（搜索 + 筛选 chips + 筛选/显示）。
             self.header.controls = [self._toolbar_card()]
+            holder = getattr(self, "_more_menu_holder", None)
+            if holder is not None:
+                holder.content = self._more_menu()
 
         # 新骨架：只渲染工具栏、表格卡与分页卡。
         if self.table_exists:
@@ -469,6 +472,18 @@ class WatchedPage(TableMixin, SearchMixin, FilterMixin, PaginationMixin, Options
         else:
             self.body.scroll = ft.ScrollMode.AUTO
             self.body.controls = [self._empty_card()]
+        # 全修/删除表格后立即隐藏滚动到底部箭头。
+        try:
+            from bangumi.ui.interaction import (
+                set_scroll_bottom_visible,
+            )
+
+            set_scroll_bottom_visible(
+                self.page,
+                self.view,
+            )
+        except Exception:
+            pass
         # 排序后按旧/新横向范围的比例换算偏移，再交给恢复任务。
         if self._restore_ratio is not None:
             self.state.horizontal_offset = (
@@ -478,7 +493,11 @@ class WatchedPage(TableMixin, SearchMixin, FilterMixin, PaginationMixin, Options
             self._restore_ratio = None
         if update_page:
             if update_header:
-                self.page.update(self.header, self.body)
+                self.page.update(
+                    self.header,
+                    self.body,
+                    self.view.appbar,
+                )
             else:
                 self.body.update()
             if restore_scroll:
@@ -571,7 +590,10 @@ class WatchedPage(TableMixin, SearchMixin, FilterMixin, PaginationMixin, Options
         }
 
     def _create_view(self) -> ft.View:
-        # 标题紧跟返回箭头；加号 / … / 骰子排在标题右侧，等距。
+        # 标题行菜单用占位容器，刷新时可替换内容。
+        self._more_menu_holder = ft.Container(
+            content=self._more_menu(),
+        )
         self.count_text = ui_text("", size=12, color=self._ui_colors["secondary"])
         add_button = ft.Container(
             bgcolor=self._ui_colors["add_bg"],
@@ -604,7 +626,7 @@ class WatchedPage(TableMixin, SearchMixin, FilterMixin, PaginationMixin, Options
                     ],
                 ),
                 add_button,
-                self._more_menu(),
+                self._more_menu_holder,
                 hover_icon(
                     self.page,
                     ft.Icons.CASINO,

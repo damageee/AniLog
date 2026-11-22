@@ -20,6 +20,14 @@ DETAIL_PATTERN = re.compile(
     r'class="title_cn[^>]*"[^>]*>(.*?)</p>',
     re.DOTALL,
 )
+TITLE_MAIN_PATTERN = re.compile(
+    r'class="title_main[^"]*"[^>]*>(.*?)</td>',
+    re.DOTALL,
+)
+TITLE_CN_PATTERN = re.compile(
+    r'class="title_cn[^"]*"[^>]*>(.*?)</p>',
+    re.DOTALL,
+)
 FUTURE_PATTERN = re.compile(
     r'class="future_title_"[^>]*>(.*?)</td>',
     re.DOTALL,
@@ -76,13 +84,40 @@ def parse_titles(source: str) -> list[str]:
     """从季度页面收集中文标题，保持页面顺序。"""
     titles: list[str] = []
     seen: set[str] = set()
-    for pattern in (DETAIL_PATTERN, FUTURE_PATTERN):
-        for match in pattern.finditer(source):
-            title = _clean(match.group(1))
-            if not title or title in seen:
-                continue
-            seen.add(title)
-            titles.append(title)
+
+    def add(title: str) -> None:
+        if not title or title in seen:
+            return
+        seen.add(title)
+        titles.append(title)
+
+    # 新版结构：一个 title_main 内可能有多行中文标题。
+    main_found = False
+    for match in TITLE_MAIN_PATTERN.finditer(source):
+        main_found = True
+        parts = [
+            _clean(part)
+            for part in TITLE_CN_PATTERN.findall(match.group(1))
+        ]
+        parts = [part for part in parts if part]
+        if not parts:
+            continue
+        title = parts[0]
+        for part in parts[1:]:
+            if part.startswith(("(", "（", "[", "【")):
+                title += part
+            else:
+                title += " " + part
+        add(title)
+
+    # 兼容旧结构：没有 title_main 时才逐条匹配。
+    if not main_found:
+        for match in DETAIL_PATTERN.finditer(source):
+            add(_clean(match.group(1)))
+
+    # 前瞻标题保持原有兼容。
+    for match in FUTURE_PATTERN.finditer(source):
+        add(_clean(match.group(1)))
     return titles
 
 

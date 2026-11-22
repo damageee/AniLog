@@ -13,9 +13,10 @@ import sys
 import unicodedata
 from collections import Counter
 from difflib import SequenceMatcher
-from pathlib import Path
 
 import requests
+
+from bangumi.version import APP_VERSION
 
 from bangumi.core.text_variants import fold_variants
 from bangumi.services.proxy import current_proxies, mark_proxy_dead
@@ -265,17 +266,6 @@ _PARTICLES = set(
 _CN_DIGITS = "零一二三四五六七八九"
 
 
-def _project_version() -> str:
-    """从 pyproject.toml 读取版本，失败时回退到 0.2.0。"""
-    path = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return "0.1.0"
-    match = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"', text)
-    return match.group(1) if match else "0.2.0"
-
-
 def _platform_name() -> str:
     env = os.environ.get("FLET_PLATFORM", "")
     if env.lower().startswith("android") or sys.platform == "android":
@@ -285,7 +275,7 @@ def _platform_name() -> str:
 
 def _user_agent() -> str:
     return USER_AGENT_TEMPLATE.format(
-        version=_project_version(),
+        version=APP_VERSION,
         platform=_platform_name(),
     )
 

@@ -9,6 +9,44 @@ import flet as ft
 from bangumi.core.utils import percent
 
 
+def show_loading(page: ft.Page) -> ft.Container:
+    """左下角显示加载转圈。"""
+    ring = ft.Container(
+        left=24,
+        bottom=24,
+        width=44,
+        height=44,
+        alignment=ft.Alignment.CENTER,
+        content=ft.ProgressRing(
+            width=26,
+            height=26,
+            stroke_width=3,
+            color=ft.Colors.BLUE,
+        ),
+    )
+    try:
+        page.overlay.append(ring)
+        page.update()
+    except Exception:
+        pass
+    return ring
+
+
+def hide_loading(
+    page: ft.Page,
+    ring: ft.Container | None,
+) -> None:
+    """隐藏并移除加载转圈。"""
+    if ring is None:
+        return
+    try:
+        if ring in page.overlay:
+            page.overlay.remove(ring)
+        page.update()
+    except Exception:
+        pass
+
+
 def current_year() -> int:
     return dt.date.today().year
 

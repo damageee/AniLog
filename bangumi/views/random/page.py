@@ -483,9 +483,14 @@ def _on_shown(page: ft.Page) -> None:
         _render(page)
         _start_fill(page)
         return
-    # 设置页直接返回（未确认）：空列表且无填充任务时自动开始取图。
-    if not st["items"] and not st.get("running"):
-        _start_fill(page)
+    # 返回随机页：未在填充且当前数量不足容量时继续补齐。
+    if not st.get("running"):
+        _, height, gap, cols, img_w = layout.metrics(page)
+        capacity = layout.capacity(
+            st["items"], cols, img_w, gap, height
+        )
+        if len(st["items"]) < capacity:
+            _start_fill(page)
 
 
 def _on_resize(page: ft.Page) -> None:

@@ -117,13 +117,20 @@ def open_random_detail(page: ft.Page, res: dict) -> None:
 
     def on_watched(event=None) -> None:
         close_dialog()
-        open_entry_form(
-            page,
-            title="我已经看过了！",
-            prefill_anime=name,
-            auto_search=True,
-            on_save=lambda record: _save_new_record(page, record),
-        )
+
+        async def after_close() -> None:
+            await asyncio.sleep(0.12)
+            open_entry_form(
+                page,
+                title="我已经看过了！",
+                prefill_anime=name,
+                auto_search=True,
+                on_save=lambda record: _save_new_record(
+                    page, record
+                ),
+            )
+
+        page.run_task(after_close)
 
     def show_priority() -> None:
         priority = ft.AlertDialog(
@@ -165,7 +172,7 @@ def open_random_detail(page: ft.Page, res: dict) -> None:
         close_dialog()
 
         async def delayed() -> None:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.12)
             show_priority()
 
         page.run_task(delayed)

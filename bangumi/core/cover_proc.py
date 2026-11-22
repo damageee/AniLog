@@ -15,7 +15,17 @@ _RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS
 _THUMB_CACHE: dict[tuple[int, int], bytes] = {}
 _THUMB_CACHE_LIMIT = 1200
 
-__all__ = ["processed_cover", "process_cover_bytes"]
+__all__ = [
+    "invalidate_cover",
+    "processed_cover",
+    "process_cover_bytes",
+]
+
+
+def invalidate_cover(bgm_id: int) -> None:
+    """清除某个条目的全部缩略图缓存。"""
+    for key in [k for k in _THUMB_CACHE if k[0] == bgm_id]:
+        _THUMB_CACHE.pop(key, None)
 
 
 def process_cover_bytes(raw: bytes, width: int) -> bytes | None:

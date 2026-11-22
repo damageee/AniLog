@@ -15,6 +15,7 @@ from typing import Callable
 import flet as ft
 from bangumi.core.utils import to_bgm_id
 
+from bangumi.core.cover_proc import invalidate_cover
 from bangumi.services.bgm_characters import get_characters
 from bangumi.services.bgm_info import get_subject_info
 from bangumi.services.bgm_persons import get_persons
@@ -2067,6 +2068,7 @@ class EntryForm:
                     message="获取封面图失败",
                 )
                 return
+            invalidate_cover(subject_id)
             self._refresh_cover_buttons()
             show_toast(self.page, "封面图获取成功")
         finally:
@@ -2101,6 +2103,8 @@ class EntryForm:
                 pass
             except OSError:
                 pass
+        if self.bgm_id != -1:
+            invalidate_cover(self.bgm_id)
         self._refresh_cover_buttons()
         show_toast(self.page, "封面图已删除")
 
@@ -2463,6 +2467,7 @@ class EntryForm:
                     path.unlink()
                 except OSError:
                     pass
+            invalidate_cover(self._pending_cover_delete)
         self._pending_cover_delete = None
 
         # 保存成功后：有 Bangumi ID 且本地还没有封面时，询问是否缓存。
@@ -2485,8 +2490,10 @@ class EntryForm:
 
         def confirm(event=None) -> None:
             self.page.pop_dialog()
-            self._close_after_save()
-            self.page.run_task(self._cache_cover_task, subject_id)
+            self.page.run_task(
+                self._cache_cover_then_close,
+                subject_id,
+            )
 
         self.page.show_dialog(
             ft.AlertDialog(
@@ -2505,29 +2512,26 @@ class EntryForm:
             )
         )
 
-    async def _cache_cover_task(self, subject_id: int) -> None:
-        """后台缓存封面；表单页已关闭，提示走 page 级 overlay。"""
+    async def _cache_cover_then_close(self, subject_id: int) -> None:
+        """等封面缓存完成后再关闭表单，保证列表刷新能读到新封面。"""
         self._show_bgm_loading()
+        path = None
         try:
             path = await asyncio.to_thread(
                 save_subject_image,
                 subject_id,
             )
+            invalidate_cover(subject_id)
         except Exception as exc:
             show_error_dialog(
                 self.page,
                 title="封面图",
                 message=f"缓存封面失败：{exc}",
             )
-            return
         finally:
             self._hide_bgm_loading()
+            self._close_after_save()
         if path is None:
-            show_error_dialog(
-                self.page,
-                title="封面图",
-                message="缓存封面失败：没有拿到图片",
-            )
             return
         show_toast(self.page, "封面图缓存成功")
 

@@ -17,6 +17,7 @@ from bangumi.ui.interaction import (
     hover_icon,
 )
 from bangumi.ui.tag_colors import sync_tag_colors
+from bangumi.views.widgets.toast import show_toast
 
 from bangumi.views.watched.constants import *
 

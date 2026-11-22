@@ -245,6 +245,18 @@ def favorites_view(page: ft.Page) -> ft.View:
         spacing=10,
         horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
     )
+    hover_action_rows: list[ft.Row] = []
+
+    def reset_hover_states() -> None:
+        """收起残留的文件夹操作按钮。"""
+        for row in hover_action_rows:
+            if not row.visible:
+                continue
+            row.visible = False
+            try:
+                row.update()
+            except Exception:
+                pass
 
     def refresh() -> None:
         body.controls = build_buttons()
@@ -254,6 +266,7 @@ def favorites_view(page: ft.Page) -> ft.View:
             pass
 
     def open_folder(folder_id: str) -> None:
+        reset_hover_states()
         push_view(page, favorite_page_view(page, folder_id))
 
     def set_actions(
@@ -487,6 +500,7 @@ def favorites_view(page: ft.Page) -> ft.View:
             visible=False,
             controls=folder_actions(index, folder),
         )
+        hover_action_rows.append(actions)
         return ft.Container(
             expand=True,
             content=ft.GestureDetector(
@@ -528,13 +542,17 @@ def favorites_view(page: ft.Page) -> ft.View:
         return controls
 
     body.controls = build_buttons()
-    return _back_view(
+    view = _back_view(
         page,
         route=route,
         title="收藏",
         controls=[vertical_page([body], stretch=True)],
         rebuild=lambda: favorites_view(page),
     )
+    data = view.data if isinstance(view.data, dict) else {}
+    data["on_shown"] = reset_hover_states
+    view.data = data
+    return view
 
 
 def _refresh_favorites_home(page: ft.Page) -> None:

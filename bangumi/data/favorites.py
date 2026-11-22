@@ -215,6 +215,26 @@ def remove_item(data: dict, folder_id: str, index: int) -> bool:
     return True
 
 
+def remove_item_by_uid(
+    data: dict,
+    folder_id: str,
+    uid: str,
+) -> bool:
+    """按 uid 从收藏夹移除条目。"""
+    items = _items_of(data, folder_id)
+    if items is None:
+        return False
+    target = str(uid or "").strip()
+    for index, item in enumerate(items):
+        if (
+            isinstance(item, dict)
+            and str(item.get("uid") or "").strip() == target
+        ):
+            items.pop(index)
+            return True
+    return False
+
+
 def move_item(
     data: dict,
     folder_id: str,
